@@ -1,0 +1,85 @@
+import Combine
+import Foundation
+import ServiceManagement
+
+@MainActor
+final class AppSettings: ObservableObject {
+    private enum Key {
+        static let autoRecord = "autoRecord"
+        static let includeMicrophone = "includeMicrophone"
+        static let consentAcknowledged = "recordingConsentAcknowledgedV1"
+        static let launchAtLogin = "launchAtLogin"
+        static let screenPermissionConfigured = "screenPermissionConfiguredV1"
+        static let screenPermissionPromptAttempted = "screenPermissionPromptAttemptedV1"
+    }
+
+    @Published var autoRecord: Bool {
+        didSet { defaults.set(autoRecord, forKey: Key.autoRecord) }
+    }
+
+    @Published var includeMicrophone: Bool {
+        didSet { defaults.set(includeMicrophone, forKey: Key.includeMicrophone) }
+    }
+
+    @Published var consentAcknowledged: Bool {
+        didSet { defaults.set(consentAcknowledged, forKey: Key.consentAcknowledged) }
+    }
+
+    @Published var launchAtLogin: Bool {
+        didSet {
+            defaults.set(launchAtLogin, forKey: Key.launchAtLogin)
+            guard consentAcknowledged else { return }
+            updateLoginItem()
+        }
+    }
+
+    @Published var screenPermissionConfigured: Bool {
+        didSet { defaults.set(screenPermissionConfigured, forKey: Key.screenPermissionConfigured) }
+    }
+
+    @Published var screenPermissionPromptAttempted: Bool {
+        didSet { defaults.set(screenPermissionPromptAttempted, forKey: Key.screenPermissionPromptAttempted) }
+    }
+
+    @Published private(set) var loginItemError: String?
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let existingUser = defaults.bool(forKey: Key.consentAcknowledged)
+        defaults.register(defaults: [
+            Key.autoRecord: true,
+            Key.includeMicrophone: true,
+            Key.launchAtLogin: true,
+            Key.screenPermissionConfigured: existingUser,
+            Key.screenPermissionPromptAttempted: existingUser
+        ])
+        autoRecord = defaults.bool(forKey: Key.autoRecord)
+        includeMicrophone = defaults.bool(forKey: Key.includeMicrophone)
+        consentAcknowledged = defaults.bool(forKey: Key.consentAcknowledged)
+        launchAtLogin = defaults.bool(forKey: Key.launchAtLogin)
+        screenPermissionConfigured = defaults.bool(forKey: Key.screenPermissionConfigured)
+        screenPermissionPromptAttempted = defaults.bool(forKey: Key.screenPermissionPromptAttempted)
+    }
+
+    func applyLoginItemPreference() {
+        if launchAtLogin { updateLoginItem() }
+    }
+
+    private func updateLoginItem() {
+        guard #available(macOS 13.0, *) else { return }
+        do {
+            if launchAtLogin {
+                if SMAppService.mainApp.status != .enabled {
+                    try SMAppService.mainApp.register()
+                }
+            } else if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            }
+            loginItemError = nil
+        } catch {
+            loginItemError = "Launch at login could not be changed: \(error.localizedDescription)"
+        }
+    }
+}

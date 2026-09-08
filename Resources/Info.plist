@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>MeetMemento</string>
+    <key>CFBundleExecutable</key>
+    <string>MeetMemento</string>
+    <key>CFBundleIconFile</key>
+    <string>MeetMemento</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.meetmemento.mac</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>MeetMemento</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+	<string>0.6.0</string>
+    <key>CFBundleVersion</key>
+	<string>11</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MeetMemento records the currently selected microphone so your side of a Zoom conversation appears in the transcript.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>MeetMemento uses Screen Recording access to save Zoom windows and Zoom audio while excluding unrelated apps.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>MeetMemento captures audio produced by Zoom so it can save and transcribe your meetings regardless of the selected output device.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>MeetMemento uses speech recognition to turn your saved meeting audio into a transcript.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>MeetMemento uses matching calendar events to give recordings useful meeting names.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>MeetMemento uses matching calendar events to give recordings useful meeting names.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+</dict>
+</plist>

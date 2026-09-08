@@ -1,0 +1,25 @@
+name: macOS checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run logic checks
+        run: ./Scripts/check.sh
+
+      - name: Build app
+        env:
+          ARCHITECTURES: ${{ runner.arch == 'ARM64' && 'arm64' || 'x86_64' }}
+        run: ./Scripts/build-app.sh

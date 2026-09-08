@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     private var missedMeetingChecks = 0
     private var suppressAutomaticRecordingUntilMeetingEnds = false
     private var activeMeetingTitle: String?
+    private var didAuditSavedVideos = false
 
     var canStartRecording: Bool {
         activeCapture == nil && captureState != .starting && captureState != .stopping && captureState != .transcribing
@@ -46,6 +47,10 @@ final class AppModel: ObservableObject {
         }
         if settings.consentAcknowledged {
             settings.applyLoginItemPreference()
+        }
+        if !didAuditSavedVideos {
+            didAuditSavedVideos = true
+            Task { await auditSavedVideos() }
         }
     }
 
@@ -188,7 +193,10 @@ final class AppModel: ObservableObject {
         captureState = .stopping
         let errors = await captureController.stop()
         let endedAt = Date()
-        let videoExists = FileManager.default.fileExists(atPath: capture.videoURL.path)
+        let videoValidation = await MeetingVideoValidator.validate(
+            url: capture.videoURL,
+            expectedDuration: endedAt.timeIntervalSince(capture.startedAt)
+        )
         let systemAudioExists = FileManager.default.fileExists(atPath: capture.systemAudioURL.path)
         let microphoneExists = capture.microphoneURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
 
@@ -200,6 +208,10 @@ final class AppModel: ObservableObject {
                 return nil
             }
             return error.localizedDescription
+        }
+        if let videoWarning = videoValidation.warning,
+           !saveErrors.contains(videoWarning) {
+            saveErrors.append(videoWarning)
         }
         if systemAudioExists && !microphoneExists {
             combinedAudioFile = capture.systemAudioURL.lastPathComponent
@@ -223,7 +235,7 @@ final class AppModel: ObservableObject {
             startedAt: capture.startedAt,
             endedAt: endedAt,
             folderName: capture.folderURL.lastPathComponent,
-            videoFile: videoExists ? capture.videoURL.lastPathComponent : nil,
+            videoFile: videoValidation.isPlayable ? capture.videoURL.lastPathComponent : nil,
             systemAudioFile: systemAudioExists ? capture.systemAudioURL.lastPathComponent : nil,
             microphoneFile: microphoneExists ? capture.microphoneURL?.lastPathComponent : nil,
             combinedAudioFile: combinedAudioFile,
@@ -247,7 +259,18 @@ final class AppModel: ObservableObject {
             meeting = await transcribe(meeting)
         }
         captureState = .idle
-        notify(title: "Zoom recording saved", body: meeting.transcriptionStatus == .complete ? "Your video, audio, transcript, and summary are ready." : "Your available video and audio files were saved.")
+        let readyItems = [
+            meeting.videoFile == nil ? nil : "video",
+            meeting.combinedAudioFile == nil ? nil : "audio",
+            meeting.transcriptFile == nil ? nil : "transcript",
+            meeting.summaryFile == nil ? nil : "summary"
+        ].compactMap { $0 }
+        notify(
+            title: "Zoom recording saved",
+            body: readyItems.isEmpty
+                ? "The recording needs attention. Open MeetMemento for details."
+                : "Your \(readyItems.joined(separator: ", ")) \(readyItems.count == 1 ? "is" : "are") ready."
+        )
     }
 
     func retryTranscription(for meeting: MeetingRecord) async {
@@ -398,8 +421,8 @@ final class AppModel: ObservableObject {
 
     private func transcribe(_ original: MeetingRecord) async -> MeetingRecord {
         var meeting = original
+        let recordingErrors = meeting.errorMessage.map { [$0] } ?? []
         meeting.transcriptionStatus = .processing
-        meeting.errorMessage = nil
         try? library.save(meeting)
 
         let folder = library.folder(for: meeting)
@@ -419,7 +442,7 @@ final class AppModel: ObservableObject {
 
         if segments.isEmpty {
             meeting.transcriptionStatus = .failed
-            meeting.errorMessage = failures.joined(separator: "\n")
+            meeting.errorMessage = (recordingErrors + failures).joined(separator: "\n")
         } else {
             meeting.transcript = TranscriptFormatter.format(segments)
             meeting.transcriptFile = "transcript.txt"
@@ -431,11 +454,39 @@ final class AppModel: ObservableObject {
             meeting.summary = summary.isEmpty ? nil : summary
             meeting.summaryFile = summary.isEmpty ? nil : "summary.txt"
             meeting.transcriptionStatus = .complete
-            meeting.errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
+            let allErrors = recordingErrors + failures
+            meeting.errorMessage = allErrors.isEmpty ? nil : allErrors.joined(separator: "\n")
         }
         do { try library.save(meeting) }
         catch { statusMessage = "Transcript completed but could not be saved: \(error.localizedDescription)" }
         return meeting
+    }
+
+    private func auditSavedVideos() async {
+        let savedMeetings = library.meetings
+        for original in savedMeetings {
+            guard let videoFile = original.videoFile else { continue }
+            let videoURL = library.folder(for: original).appendingPathComponent(videoFile)
+            let validation = await MeetingVideoValidator.validate(
+                url: videoURL,
+                expectedDuration: original.duration
+            )
+            guard !validation.isPlayable || validation.warning != nil else { continue }
+
+            var meeting = original
+            if !validation.isPlayable {
+                // Keep the raw file in the recording folder for possible future
+                // recovery, but never offer a corrupt file as a working video.
+                meeting.videoFile = nil
+            }
+            if let warning = validation.warning,
+               meeting.errorMessage?.contains(warning) != true {
+                meeting.errorMessage = [meeting.errorMessage, warning]
+                    .compactMap { $0 }
+                    .joined(separator: "\n")
+            }
+            try? library.save(meeting)
+        }
     }
 
     private func transcribeTrack(fileURL: URL, source: String) async throws -> [TranscriptSegment] {

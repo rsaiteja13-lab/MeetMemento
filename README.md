@@ -31,7 +31,7 @@ The build script creates a universal app for both Apple silicon and Intel Macs. 
 ## What the MVP does
 
 - Detects an active Zoom meeting and begins recording automatically after onboarding.
-- Records Zoom's windows as an H.264 video while excluding unrelated apps on the selected display.
+- Records Zoom's windows as an H.264 video while excluding unrelated apps on the selected display. On macOS 15 and later it uses ScreenCaptureKit's native recording output; macOS 13 and 14 use an isolated, fragmented video writer so an audio encoder problem cannot corrupt the video.
 - Captures Zoom at the application-audio layer, before macOS sends it to speakers, AirPods, Bluetooth headsets, docks, or another output.
 - Captures the current default microphone as a second track, converts every input to one stable recording format, and reconnects when the input device changes.
 - Breaks long recordings into short transcription jobs, merges them into one timestamped transcript, and creates a concise local summary.
@@ -59,7 +59,7 @@ NOTARY_PROFILE="meetmemento-notary" \
 ./Scripts/release.sh
 ```
 
-The notarized universal ZIP is written to `Dist/MeetMemento-0.6.0.zip`.
+The notarized universal ZIP is written to `Dist/MeetMemento-0.6.1.zip`.
 
 ## Privacy and consent
 

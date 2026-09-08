@@ -100,6 +100,21 @@ struct MeetingDetailView: View {
                         .frame(minHeight: 240, idealHeight: 340, maxHeight: 420)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
+                } else if meeting.errorMessage?.contains("Zoom video") == true {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Zoom screen recording", systemImage: "play.rectangle.fill")
+                            .font(.headline)
+                        HStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.orange)
+                            Text("The video did not finish correctly. Your full audio, transcript, and summary remain available.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                 }
 
                 Divider()

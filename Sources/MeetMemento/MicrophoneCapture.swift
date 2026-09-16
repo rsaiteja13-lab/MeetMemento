@@ -3,7 +3,6 @@ import Foundation
 
 final class MicrophoneCapture: @unchecked Sendable {
     private let outputURL: URL
-    private let engine = AVAudioEngine()
     private let controlQueue = DispatchQueue(label: "MeetMemento.MicrophoneControl")
     private let fileLock = NSLock()
     private let recordingFormat = AVAudioFormat(
@@ -14,6 +13,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     )!
 
     private var file: AVAudioFile?
+    private var engine: AVAudioEngine?
     private var writeError: Error?
     private var configurationObserver: NSObjectProtocol?
     private var pendingRestart: DispatchWorkItem?
@@ -31,9 +31,9 @@ final class MicrophoneCapture: @unchecked Sendable {
             file = try AVAudioFile(forWriting: outputURL, settings: recordingFormat.settings)
             isActive = true
             do {
-                try installTapAndStartEngine()
-                observeInputDeviceChanges()
+                try startFreshEngine()
             } catch {
+                tearDownEngine()
                 isActive = false
                 file = nil
                 throw error
@@ -50,11 +50,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 NotificationCenter.default.removeObserver(configurationObserver)
                 self.configurationObserver = nil
             }
-            engine.stop()
-            if tapInstalled {
-                engine.inputNode.removeTap(onBus: 0)
-                tapInstalled = false
-            }
+            tearDownEngine()
             fileLock.lock()
             file = nil
             let error = writeError
@@ -64,7 +60,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         if let finalError { throw finalError }
     }
 
-    private func observeInputDeviceChanges() {
+    private func observeInputDeviceChanges(for engine: AVAudioEngine) {
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -86,14 +82,16 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func restartForCurrentInput(attempt: Int) {
         guard isActive else { return }
-        engine.stop()
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-        }
+        // AVAudioEngine can retain an input tap internally while macOS switches
+        // devices, even after removeTap is called. Installing another tap on that
+        // engine raises an Objective-C exception and terminates the whole app.
+        // A fresh engine has no retained tap and keeps Zoom video/system audio
+        // recording even when AirPods or Bluetooth profiles change.
+        tearDownEngine()
         do {
-            try installTapAndStartEngine()
+            try startFreshEngine()
         } catch {
+            tearDownEngine()
             // Bluetooth inputs can briefly disappear while macOS changes audio profiles.
             if attempt < 4 {
                 controlQueue.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -105,12 +103,19 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
     }
 
-    private func installTapAndStartEngine() throws {
+    private func startFreshEngine() throws {
+        let engine = AVAudioEngine()
+        self.engine = engine
+        try installTapAndStartEngine(engine)
+        observeInputDeviceChanges(for: engine)
+    }
+
+    private func installTapAndStartEngine(_ engine: AVAudioEngine) throws {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
               let converter = AVAudioConverter(from: inputFormat, to: recordingFormat) else {
-            throw CaptureError.writerFailed("No microphone format is available")
+            throw CaptureError.writerFailed("MeetMemento couldn’t read the microphone format")
         }
 
         input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
@@ -131,6 +136,23 @@ final class MicrophoneCapture: @unchecked Sendable {
         try engine.start()
     }
 
+    private func tearDownEngine() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        guard let engine else {
+            tapInstalled = false
+            return
+        }
+        engine.stop()
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        tapInstalled = false
+        self.engine = nil
+    }
+
     private func setWriteError(_ error: Error) {
         fileLock.lock()
         if writeError == nil { writeError = error }
@@ -145,7 +167,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let ratio = outputFormat.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio)) + 32
         guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
-            throw CaptureError.writerFailed("The microphone audio could not be converted")
+            throw CaptureError.writerFailed("Microphone audio couldn’t be prepared")
         }
 
         var suppliedInput = false
@@ -160,7 +182,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             return input
         }
         if status == .error {
-            throw conversionError ?? CaptureError.writerFailed("The microphone audio could not be converted")
+            throw conversionError ?? CaptureError.writerFailed("Microphone audio couldn’t be prepared")
         }
         return output
     }

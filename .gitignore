@@ -4,3 +4,7 @@ Dist/
 .swiftpm/
 *.xcuserstate
 xcuserdata/
+
+# Separate local projects that share this parent folder.
+family-wealth-prototype/
+kin-finance/

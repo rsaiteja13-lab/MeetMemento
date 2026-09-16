@@ -13,7 +13,7 @@ enum MeetingVideoValidator {
             return MeetingVideoValidation(
                 isPlayable: false,
                 duration: 0,
-                warning: "The Zoom video file was not created. The audio and transcript are still available."
+                warning: "The meeting video wasn’t saved. The audio and transcript are still available."
             )
         }
 
@@ -29,7 +29,7 @@ enum MeetingVideoValidator {
                 return MeetingVideoValidation(
                     isPlayable: false,
                     duration: max(0, seconds),
-                    warning: "The Zoom video did not finish correctly and cannot be played. The audio and transcript are still available."
+                    warning: "The meeting video wasn’t saved correctly and can’t be played. The audio and transcript are still available."
                 )
             }
 
@@ -42,14 +42,14 @@ enum MeetingVideoValidator {
                 isPlayable: true,
                 duration: seconds,
                 warning: substantiallyShort
-                    ? "The Zoom video is playable, but it ended before the rest of the meeting. The full audio and transcript are available."
+                    ? "The meeting video ended early. The full audio and transcript are available."
                     : nil
             )
         } catch {
             return MeetingVideoValidation(
                 isPlayable: false,
                 duration: 0,
-                warning: "The Zoom video did not finish correctly and cannot be played. The audio and transcript are still available."
+                warning: "The meeting video wasn’t saved correctly and can’t be played. The audio and transcript are still available."
             )
         }
     }

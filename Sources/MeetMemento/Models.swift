@@ -14,7 +14,7 @@ enum CaptureState: Equatable {
         case .starting: return "Starting…"
         case .recording: return "Recording"
         case .stopping: return "Saving…"
-        case .transcribing: return "Transcribing…"
+        case .transcribing: return "Creating transcript…"
         case .failed(let message): return message
         }
     }
@@ -43,11 +43,11 @@ enum TranscriptionStatus: String, Codable {
 
     var label: String {
         switch self {
-        case .pending: return "Waiting"
-        case .processing: return "Transcribing"
+        case .pending: return "Transcript queued"
+        case .processing: return "Creating transcript"
         case .complete: return "Transcript ready"
-        case .permissionRequired: return "Speech access needed"
-        case .failed: return "Transcription failed"
+        case .permissionRequired: return "Transcript access"
+        case .failed: return "No transcript"
         }
     }
 }
@@ -64,8 +64,6 @@ struct MeetingRecord: Codable, Identifiable, Hashable {
     var combinedAudioFile: String?
     var transcriptFile: String?
     var transcript: String?
-    var summaryFile: String?
-    var summary: String?
     var transcriptionStatus: TranscriptionStatus
     var errorMessage: String?
 
@@ -78,7 +76,6 @@ enum MeetingExportKind: String, CaseIterable, Identifiable {
     case audio
     case video
     case transcript
-    case summary
 
     var id: String { rawValue }
 
@@ -87,7 +84,6 @@ enum MeetingExportKind: String, CaseIterable, Identifiable {
         case .audio: return "Audio"
         case .video: return "Video"
         case .transcript: return "Transcript"
-        case .summary: return "Summary"
         }
     }
 
@@ -96,7 +92,6 @@ enum MeetingExportKind: String, CaseIterable, Identifiable {
         case .audio: return "waveform"
         case .video: return "video.fill"
         case .transcript: return "text.quote"
-        case .summary: return "list.bullet.rectangle"
         }
     }
 }
@@ -125,4 +120,5 @@ struct ActiveCapture {
     let videoURL: URL
     let systemAudioURL: URL
     let microphoneURL: URL?
+    var startupWarnings: [String]
 }

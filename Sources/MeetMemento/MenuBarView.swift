@@ -19,7 +19,7 @@ struct MenuBarView: View {
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("MeetMemento").font(.headline)
-                    Text(settings.autoRecord ? "Always-on recorder" : "Manual recorder")
+                    Text(settings.autoRecord ? "Automatic recording on" : "Manual recording")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -56,22 +56,22 @@ struct MenuBarView: View {
                 Button {
                     Task { await model.startRecording() }
                 } label: {
-                    Label("Record Now", systemImage: "record.circle")
+                    Label("Start Recording", systemImage: "record.circle")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                     .disabled(!model.canStartRecording || !model.capturePermissionsReady)
             }
 
-            Toggle("Always record Zoom meetings", isOn: $settings.autoRecord)
+            Toggle("Record Zoom automatically", isOn: $settings.autoRecord)
             Divider()
             HStack {
-                Button("Open Library") {
+                Button("Open MeetMemento") {
                     NSApp.setActivationPolicy(.regular)
                     openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
                 }
-                Button("Files") { model.openRecordingsFolder() }
+                Button("Recordings Folder") { model.openRecordingsFolder() }
             }
             Divider()
             Button("Quit MeetMemento") { NSApplication.shared.terminate(nil) }
@@ -88,14 +88,14 @@ struct MenuBarView: View {
     }
 
     private var statusTitle: String {
-        if model.captureState == .recording { return "Recording Zoom now" }
+        if model.captureState == .recording { return "Recording Zoom" }
         if !model.permissions.screenRecording { return "One-time setup needed" }
-        return settings.autoRecord ? "Always-on is active" : "Automatic recording is off"
+        return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
-        if model.captureState == .recording { return "Video and available audio are being saved." }
-        if !model.permissions.screenRecording { return "Grant macOS screen access once." }
+        if model.captureState == .recording { return "Saving video, audio, and transcript." }
+        if !model.permissions.screenRecording { return "Allow screen access to start recording." }
         return model.zoomState.label
     }
 }

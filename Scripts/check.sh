@@ -15,7 +15,6 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 swiftc \
     "$PROJECT_DIR/Sources/MeetMemento/Models.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/TranscriptFormatter.swift" \
-    "$PROJECT_DIR/Sources/MeetMemento/MeetingSummarizer.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/MeetingNamer.swift" \
     "$PROJECT_DIR/Tests/CheckMain.swift" \
     -o "$CHECK_BINARY"

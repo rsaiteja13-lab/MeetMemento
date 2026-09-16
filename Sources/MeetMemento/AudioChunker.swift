@@ -52,7 +52,7 @@ enum AudioChunker {
 
     private static func export(asset: AVAsset, to destination: URL, range: CMTimeRange) async throws {
         guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw CaptureError.writerFailed("This audio format cannot be prepared for transcription")
+            throw CaptureError.writerFailed("This audio format can’t be prepared for a transcript")
         }
         exporter.outputURL = destination
         exporter.outputFileType = .m4a
@@ -62,9 +62,9 @@ enum AudioChunker {
         case .completed:
             return
         case .failed, .cancelled:
-            throw exporter.error ?? CaptureError.writerFailed("Audio preparation failed")
+            throw exporter.error ?? CaptureError.writerFailed("Audio couldn’t be prepared for a transcript")
         default:
-            throw CaptureError.writerFailed("Audio preparation did not complete")
+            throw CaptureError.writerFailed("Audio preparation didn’t finish")
         }
     }
 }

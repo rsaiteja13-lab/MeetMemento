@@ -10,7 +10,13 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 MODULE_CACHE="$PROJECT_DIR/.build/ModuleCache"
 ARCHITECTURES="${ARCHITECTURES:-arm64 x86_64}"
-SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
+if [[ -z "${SIGNING_IDENTITY:-}" ]]; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -Fq '"MeetMemento Local Code Signing"'; then
+        SIGNING_IDENTITY="MeetMemento Local Code Signing"
+    else
+        SIGNING_IDENTITY="-"
+    fi
+fi
 
 mkdir -p "$MODULE_CACHE"
 
@@ -22,9 +28,29 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 binary_paths=()
+source_files=("$PROJECT_DIR"/Sources/MeetMemento/*.swift)
+plugin_path="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins"
 for architecture in $ARCHITECTURES; do
-    swift build --disable-sandbox -c release --arch "$architecture"
-    binary_dir="$(swift build --disable-sandbox -c release --arch "$architecture" --show-bin-path)"
+    binary_dir="$PROJECT_DIR/.build/manual-$architecture/release"
+    mkdir -p "$binary_dir"
+    swiftc \
+        -parse-as-library \
+        -O \
+        -whole-module-optimization \
+        -target "$architecture-apple-macosx13.0" \
+        -plugin-path "$plugin_path" \
+        "${source_files[@]}" \
+        -o "$binary_dir/MeetMemento" \
+        -framework AVFoundation \
+        -framework AVKit \
+        -framework AppKit \
+        -framework CoreGraphics \
+        -framework EventKit \
+        -framework ScreenCaptureKit \
+        -framework ServiceManagement \
+        -framework Speech \
+        -framework SwiftUI \
+        -framework UserNotifications
     binary_paths+=("$binary_dir/MeetMemento")
 done
 
@@ -58,7 +84,11 @@ if [[ -f "$icon_master" ]]; then
     fi
 fi
 
-codesign --force --deep --options runtime --timestamp \
+timestamp_option="--timestamp"
+if [[ "$SIGNING_IDENTITY" == "-" || "$SIGNING_IDENTITY" == "MeetMemento Local Code Signing" ]]; then
+    timestamp_option="--timestamp=none"
+fi
+codesign --force --deep --options runtime "$timestamp_option" \
     --entitlements "$PROJECT_DIR/Resources/MeetMemento.entitlements" \
     --sign "$SIGNING_IDENTITY" "$APP_DIR"
 

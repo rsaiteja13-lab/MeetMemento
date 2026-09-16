@@ -7,8 +7,8 @@ enum TranscriptionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .recognizerUnavailable: return "Speech recognition is unavailable for the current language."
-        case .noSpeech: return "No recognizable speech was found in this audio track."
+        case .recognizerUnavailable: return "A transcript isn’t available for the current language."
+        case .noSpeech: return "No speech was detected in this audio."
         }
     }
 }

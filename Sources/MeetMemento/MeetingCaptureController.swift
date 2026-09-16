@@ -10,13 +10,14 @@ final class MeetingCaptureController {
         let systemAudioURL = folderURL.appendingPathComponent("meeting-audio.m4a")
         let microphoneURL = includeMicrophone ? folderURL.appendingPathComponent("my-microphone.caf") : nil
 
+        var startupWarnings: [String] = []
         if let microphoneURL {
             let microphone = MicrophoneCapture(outputURL: microphoneURL)
             do {
                 try microphone.start()
                 self.microphone = microphone
             } catch {
-                // Zoom output is still useful if the microphone is temporarily unavailable.
+                startupWarnings.append("Your microphone couldn’t start: \(error.localizedDescription)")
                 self.microphone = nil
             }
         }
@@ -37,7 +38,8 @@ final class MeetingCaptureController {
             folderURL: folderURL,
             videoURL: videoURL,
             systemAudioURL: systemAudioURL,
-            microphoneURL: self.microphone == nil ? nil : microphoneURL
+            microphoneURL: self.microphone == nil ? nil : microphoneURL,
+            startupWarnings: startupWarnings
         )
     }
 

@@ -4,9 +4,9 @@ import SwiftUI
 struct MeetingDetailView: View {
     @EnvironmentObject private var model: AppModel
     let meeting: MeetingRecord
-    @State private var isRenaming = false
-    @State private var proposedTitle = ""
-    @State private var showDeleteConfirmation = false
+    @ViewState private var isRenaming = false
+    @ViewState private var proposedTitle = ""
+    @ViewState private var showDeleteConfirmation = false
 
     private var durationText: String {
         let formatter = DateComponentsFormatter()
@@ -18,15 +18,7 @@ struct MeetingDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(meeting.title)
-                        .font(.largeTitle.bold())
-                    Text(meeting.startedAt, format: .dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
-                        .foregroundStyle(.secondary)
-                    Text(durationText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                MeetingHeroHeader(meeting: meeting, durationText: durationText)
 
                 HStack(spacing: 8) {
                     Button {
@@ -38,7 +30,7 @@ struct MeetingDetailView: View {
                     Button {
                         model.exportAll(for: meeting)
                     } label: {
-                        Label("Export Complete Meeting", systemImage: "square.and.arrow.up")
+                        Label("Export All Files", systemImage: "square.and.arrow.up")
                     }
                     Button {
                         model.showInFinder(meeting)
@@ -77,7 +69,7 @@ struct MeetingDetailView: View {
                             .id(audioURL)
                     } else {
                         Label(
-                            "Audio was not captured for this recording. Allow Microphone access before the next meeting to include your voice.",
+                            "No audio was saved for this meeting. Check microphone access in MeetMemento Settings before your next call.",
                             systemImage: "mic.slash"
                         )
                         .foregroundStyle(.orange)
@@ -89,7 +81,7 @@ struct MeetingDetailView: View {
                 if let videoFile = meeting.videoFile {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Label("Zoom screen recording", systemImage: "play.rectangle.fill")
+                            Label("Meeting video", systemImage: "play.rectangle.fill")
                                 .font(.headline)
                             Spacer()
                             Button("Download Video") { model.download(.video, for: meeting) }
@@ -100,46 +92,21 @@ struct MeetingDetailView: View {
                         .frame(minHeight: 240, idealHeight: 340, maxHeight: 420)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
-                } else if meeting.errorMessage?.contains("Zoom video") == true {
+                } else if meeting.errorMessage?.localizedCaseInsensitiveContains("video") == true {
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("Zoom screen recording", systemImage: "play.rectangle.fill")
+                        Label("Meeting video", systemImage: "play.rectangle.fill")
                             .font(.headline)
                         HStack(spacing: 12) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.title2)
                                 .foregroundStyle(.orange)
-                            Text("The video did not finish correctly. Your full audio, transcript, and summary remain available.")
+                            Text("The meeting video wasn’t saved correctly. Any available audio and transcript are still available.")
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Label("Summary", systemImage: "list.bullet.rectangle")
-                            .font(.headline)
-                        Spacer()
-                        if let summary = meeting.summary, !summary.isEmpty {
-                            Button("Copy") { model.copyText(summary, label: "Summary") }
-                        }
-                        if model.library.fileURL(for: meeting, kind: .summary) != nil {
-                            Button("Download Summary") { model.download(.summary, for: meeting) }
-                        }
-                    }
-                    if let summary = meeting.summary, !summary.isEmpty {
-                        Text(summary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineSpacing(5)
-                    } else {
-                        Text("A summary will be created automatically when the transcript is ready.")
-                            .foregroundStyle(.secondary)
-                    }
                 }
 
                 Divider()
@@ -174,11 +141,11 @@ struct MeetingDetailView: View {
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                         } else {
-                            Text("Allow Speech Recognition to create a transcript and summary from the saved audio.")
+                            Text("Allow Speech Recognition to create a transcript from the saved audio.")
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                         }
-                        Button(model.permissions.speechRecognition ? "Try Transcription Again" : "Allow Speech Recognition") {
+                        Button(model.permissions.speechRecognition ? "Try Transcript Again" : "Allow Speech Recognition") {
                             Task { await model.requestSpeechAndRetry(for: meeting) }
                         }
                         .disabled(model.captureState != .idle)
@@ -196,7 +163,6 @@ struct MeetingDetailView: View {
             .padding(28)
         }
         .navigationTitle(meeting.title)
-        .onAppear { model.ensureSummary(for: meeting) }
         .sheet(isPresented: $isRenaming) {
             RenameRecordingSheet(
                 title: $proposedTitle,
@@ -217,8 +183,90 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("“\(meeting.title)” and its audio, video, transcript, and summary will be moved together. You can recover it from macOS Trash.")
+            Text("“\(meeting.title)” and its audio, video, and transcript will be moved together. You can recover it from macOS Trash.")
         }
+    }
+}
+
+private struct MeetingHeroHeader: View {
+    let meeting: MeetingRecord
+    let durationText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.white.opacity(0.16))
+                    Image(systemName: meeting.videoFile == nil ? "waveform" : "video.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 62, height: 62)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(meeting.title)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text(meeting.startedAt, format: .dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+                Spacer(minLength: 12)
+                Text(durationText)
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.white.opacity(0.15), in: Capsule())
+            }
+
+            HStack(spacing: 8) {
+                MeetingMediaBadge(
+                    label: "Video",
+                    icon: "video.fill",
+                    isAvailable: meeting.videoFile != nil
+                )
+                MeetingMediaBadge(
+                    label: "Audio",
+                    icon: "waveform",
+                    isAvailable: meeting.combinedAudioFile != nil
+                        || meeting.systemAudioFile != nil
+                        || meeting.microphoneFile != nil
+                )
+                MeetingMediaBadge(
+                    label: "Transcript",
+                    icon: "text.quote",
+                    isAvailable: !(meeting.transcript?.isEmpty ?? true)
+                )
+            }
+        }
+        .padding(22)
+        .background(
+            LinearGradient(
+                colors: [Color.indigo, Color.purple.opacity(0.86)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+        .shadow(color: .indigo.opacity(0.18), radius: 14, y: 7)
+    }
+}
+
+private struct MeetingMediaBadge: View {
+    let label: String
+    let icon: String
+    let isAvailable: Bool
+
+    var body: some View {
+        Label(label, systemImage: isAvailable ? icon : "minus.circle")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(isAvailable ? 0.95 : 0.58))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.white.opacity(isAvailable ? 0.14 : 0.08), in: Capsule())
     }
 }
 
@@ -230,9 +278,9 @@ private struct RenameRecordingSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Rename recording")
+                Text("Rename meeting")
                     .font(.title2.bold())
-                Text("Use a name that will make this meeting easy to find later.")
+                Text("Choose a name that will make this meeting easy to find later.")
                     .foregroundStyle(.secondary)
             }
             TextField("Meeting name", text: $title)
@@ -253,8 +301,8 @@ private struct RenameRecordingSheet: View {
 }
 
 private struct MeetingAudioPlayer: View {
-    @State private var player: AVPlayer
-    @State private var isPlaying = false
+    @ViewState private var player: AVPlayer
+    @ViewState private var isPlaying = false
     let url: URL
 
     init(url: URL) {
@@ -304,8 +352,8 @@ private struct MeetingAudioPlayer: View {
 }
 
 private struct MeetingVideoPlayer: View {
-    @State private var player: AVPlayer
-    @State private var state: VideoState = .checking
+    @ViewState private var player: AVPlayer
+    @ViewState private var state: VideoState = .checking
     let url: URL
 
     init(url: URL) {
@@ -319,23 +367,23 @@ private struct MeetingVideoPlayer: View {
             case .checking:
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Preparing video preview…")
+                    Text("Preparing meeting video…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black.opacity(0.88))
             case .playable:
-                VideoPlayer(player: player)
+                ScrollFriendlyVideoPlayer(player: player)
                     .background(Color.black)
             case .failed:
                 VStack(spacing: 12) {
                     Image(systemName: "film.stack.fill")
                         .font(.system(size: 38))
                         .foregroundStyle(.orange)
-                    Text("Video preview unavailable")
+                    Text("Meeting video unavailable")
                         .font(.headline)
-                    Text("This video did not finish saving. The meeting audio, transcript, and summary may still be available above and below.")
+                    Text("This video wasn’t saved correctly. The meeting audio and transcript may still be available.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -362,5 +410,76 @@ private struct MeetingVideoPlayer: View {
         case checking
         case playable
         case failed
+    }
+}
+
+/// AVPlayerView normally turns a wheel or trackpad gesture over the video into
+/// timeline seeking. In a meeting-detail page that makes ordinary scrolling feel
+/// broken. Preserve all player controls, but route wheel gestures to the outer
+/// SwiftUI ScrollView instead.
+private struct ScrollFriendlyVideoPlayer: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = ScrollForwardingAVPlayerView()
+        view.player = player
+        view.controlsStyle = .floating
+        view.videoGravity = .resizeAspect
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
+private final class ScrollForwardingAVPlayerView: AVPlayerView {
+    private var scrollMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
+        guard window != nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self,
+                  event.window === self.window,
+                  self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else {
+                return event
+            }
+            self.scrollMeetingPage(with: event)
+            // Consume the event before AVPlayerView can turn it into seeking.
+            return nil
+        }
+    }
+
+    deinit {
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        scrollMeetingPage(with: event)
+    }
+
+    private func scrollMeetingPage(with event: NSEvent) {
+        var ancestor = superview
+        while let view = ancestor, !(view is NSScrollView) {
+            ancestor = view.superview
+        }
+        guard let scrollView = ancestor as? NSScrollView,
+              let documentView = scrollView.documentView else { return }
+
+        let clipView = scrollView.contentView
+        let currentOrigin = clipView.bounds.origin
+        let minY = documentView.bounds.minY
+        let maxY = max(minY, documentView.bounds.maxY - clipView.bounds.height)
+        let multiplier: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
+        let nextY = min(max(currentOrigin.y - event.scrollingDeltaY * multiplier, minY), maxY)
+        clipView.scroll(to: NSPoint(x: currentOrigin.x, y: nextY))
+        scrollView.reflectScrolledClipView(clipView)
     }
 }

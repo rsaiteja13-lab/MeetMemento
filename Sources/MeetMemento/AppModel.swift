@@ -1,8 +1,19 @@
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 import ScreenCaptureKit
 import UserNotifications
+
+enum PermissionSetupPhase: Equatable {
+    case ready
+    case microphone
+    case speechRecognition
+    case calendar
+    case screenRecording
+    case needsSystemSettings
+    case complete
+}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -12,6 +23,7 @@ final class AppModel: ObservableObject {
     @Published var activeCapture: ActiveCapture?
     @Published var selectedMeetingID: UUID?
     @Published var statusMessage: String?
+    @Published var permissionSetupPhase: PermissionSetupPhase = .ready
 
     let settings = AppSettings()
     let library = MeetingLibrary()
@@ -25,6 +37,7 @@ final class AppModel: ObservableObject {
     private var missedMeetingChecks = 0
     private var suppressAutomaticRecordingUntilMeetingEnds = false
     private var activeMeetingTitle: String?
+    private var activeRecordingWasTriggeredAutomatically = false
     private var didAuditSavedVideos = false
 
     var canStartRecording: Bool {
@@ -35,10 +48,17 @@ final class AppModel: ObservableObject {
         permissions.screenRecording
     }
 
+    var essentialPermissionsReady: Bool {
+        permissions.screenRecording
+            && (!settings.includeMicrophone || permissions.microphone)
+            && permissions.speechRecognition
+    }
+
     func start() {
         guard !started else { return }
         started = true
         refreshPermissions()
+        finishPermissionSetupIfReady()
         refreshZoomState()
         // A one-second check catches brief calls and Zoom helper processes that
         // may exist for only a few seconds during short test meetings.
@@ -50,35 +70,97 @@ final class AppModel: ObservableObject {
         }
         if !didAuditSavedVideos {
             didAuditSavedVideos = true
-            Task { await auditSavedVideos() }
+            Task {
+                await recoverInterruptedRecordings()
+                await auditSavedVideos()
+            }
         }
     }
 
     func completeOnboarding() async {
+        guard permissionSetupPhase == .ready || permissionSetupPhase == .needsSystemSettings else { return }
         settings.consentAcknowledged = true
-        _ = Permissions.requestScreenRecording()
+
+        // Request permissions that can display normal macOS consent sheets
+        // first. Screen Recording is last because macOS may send the user to
+        // System Settings and require the app to be reopened.
+        permissionSetupPhase = .microphone
+        if settings.includeMicrophone {
+            permissions.microphone = await Permissions.requestMicrophone()
+        }
+
+        permissionSetupPhase = .speechRecognition
+        permissions.speechRecognition = await Permissions.requestSpeechRecognition()
+
+        permissionSetupPhase = .calendar
+        permissions.calendar = await Permissions.requestCalendar()
+
+        permissionSetupPhase = .screenRecording
+        permissions.screenRecording = Permissions.requestScreenRecording()
         settings.screenPermissionPromptAttempted = true
         settings.screenPermissionConfigured = true
         settings.applyLoginItemPreference()
         refreshPermissions()
+
+        if essentialPermissionsReady {
+            settings.onboardingCompleted = true
+            permissionSetupPhase = .complete
+            statusMessage = nil
+        } else {
+            permissionSetupPhase = .needsSystemSettings
+            statusMessage = missingPermissionMessage
+            openFirstMissingRequiredPermission()
+        }
+    }
+
+    func finishPermissionSetupIfReady() {
+        guard settings.consentAcknowledged, essentialPermissionsReady else { return }
+        settings.onboardingCompleted = true
+        permissionSetupPhase = .complete
+        statusMessage = nil
+    }
+
+    func openFirstMissingRequiredPermission() {
+        if !permissions.screenRecording {
+            Permissions.openPrivacySettings(.screenCapture)
+        } else if settings.includeMicrophone && !permissions.microphone {
+            Permissions.openPrivacySettings(.microphone)
+        } else if !permissions.speechRecognition {
+            Permissions.openPrivacySettings(.speechRecognition)
+        }
+    }
+
+    var missingPermissionMessage: String {
+        if !permissions.screenRecording {
+            return "Allow MeetMemento under Screen & System Audio Recording, then return here."
+        }
+        if settings.includeMicrophone && !permissions.microphone {
+            return "Allow MeetMemento to use the microphone, then return here."
+        }
+        if !permissions.speechRecognition {
+            return "Allow MeetMemento under Speech Recognition, then return here."
+        }
+        return "MeetMemento is ready."
     }
 
     func requestScreenRecordingAccess() {
-        if settings.screenPermissionPromptAttempted {
-            Permissions.openPrivacySettings(.screenCapture)
-        } else {
-            _ = Permissions.requestScreenRecording()
-            settings.screenPermissionPromptAttempted = true
-        }
+        // The persisted "prompt attempted" flag can outlive a replaced build or
+        // a manually reset TCC record. Always ask macOS for the current signed
+        // executable; macOS itself suppresses duplicate prompts after a decision.
+        let granted = Permissions.requestScreenRecording()
+        settings.screenPermissionPromptAttempted = true
         settings.screenPermissionConfigured = true
         refreshPermissions()
+        if !granted && !permissions.screenRecording {
+            Permissions.openPrivacySettings(.screenCapture)
+        }
     }
 
     func requestMicrophoneAccess() async {
         let granted = await Permissions.requestMicrophone()
         permissions.microphone = granted
         if !granted {
-            statusMessage = "Microphone access is needed to include your voice in meeting audio."
+            statusMessage = "Allow microphone access to include your voice in meeting audio."
             Permissions.openPrivacySettings(.microphone)
         }
     }
@@ -87,7 +169,7 @@ final class AppModel: ObservableObject {
         let granted = await Permissions.requestSpeechRecognition()
         permissions.speechRecognition = granted
         if !granted {
-            statusMessage = "Allow Speech Recognition in System Settings to create transcripts and summaries."
+            statusMessage = "Allow Speech Recognition to create transcripts."
             Permissions.openPrivacySettings(.speechRecognition)
         }
     }
@@ -96,7 +178,7 @@ final class AppModel: ObservableObject {
         let granted = await Permissions.requestCalendar()
         permissions.calendar = granted
         if !granted {
-            statusMessage = "Calendar access is optional. Without it, MeetMemento will name meetings from their transcript."
+            statusMessage = "Calendar access is optional. Without it, MeetMemento creates meeting names from the transcript."
             Permissions.openPrivacySettings(.calendar)
         }
     }
@@ -106,6 +188,7 @@ final class AppModel: ObservableObject {
         // can outlive a rebuilt or replaced app and otherwise report a stale
         // permission as granted, causing an automatic recording to fail silently.
         permissions = Permissions.snapshot()
+        finishPermissionSetupIfReady()
     }
 
     func refreshZoomState() {
@@ -118,7 +201,7 @@ final class AppModel: ObservableObject {
                !capturePermissionsReady,
                activeCapture == nil {
                 captureState = .failed("Screen Recording access needed")
-                statusMessage = "Open System Settings and allow MeetMemento under Privacy & Security → Screen & System Audio Recording, then quit and reopen MeetMemento."
+                statusMessage = "Allow MeetMemento under Privacy & Security → Screen & System Audio Recording, then reopen the app."
             } else if settings.autoRecord,
                settings.consentAcknowledged,
                capturePermissionsReady,
@@ -132,7 +215,7 @@ final class AppModel: ObservableObject {
                 captureState = .idle
                 statusMessage = nil
             }
-            if captureState == .recording {
+            if captureState == .recording, activeRecordingWasTriggeredAutomatically {
                 // A short grace period avoids splitting a recording while Zoom rearranges windows.
                 missedMeetingChecks += 1
                 if missedMeetingChecks >= 3 {
@@ -145,9 +228,10 @@ final class AppModel: ObservableObject {
     func startRecording(triggeredAutomatically: Bool = false) async {
         guard canStartRecording else { return }
         guard settings.consentAcknowledged else {
-            statusMessage = "Acknowledge the recording consent reminder first."
+            statusMessage = "Confirm the recording consent reminder before starting."
             return
         }
+        refreshPermissions()
         guard permissions.screenRecording else {
             captureState = .failed("Screen Recording access needed")
             return
@@ -160,11 +244,17 @@ final class AppModel: ObservableObject {
         do {
             let folder = try library.makeFolder(startedAt: startedAt)
             captureFolder = folder
-            let capture = try await captureController.start(
+            var capture = try await captureController.start(
                 in: folder,
                 includeMicrophone: settings.includeMicrophone && permissions.microphone
             )
+            if settings.includeMicrophone && !permissions.microphone {
+                capture.startupWarnings.append(
+                    "Microphone access is not currently granted, so your voice was not captured separately."
+                )
+            }
             activeCapture = capture
+            activeRecordingWasTriggeredAutomatically = triggeredAutomatically
             settings.screenPermissionConfigured = true
             selectedMeetingID = nil
             captureState = .recording
@@ -176,6 +266,7 @@ final class AppModel: ObservableObject {
                 try? FileManager.default.removeItem(at: captureFolder)
             }
             activeMeetingTitle = nil
+            activeRecordingWasTriggeredAutomatically = false
             captureState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
             if isScreenPermissionError(error) {
@@ -197,11 +288,18 @@ final class AppModel: ObservableObject {
             url: capture.videoURL,
             expectedDuration: endedAt.timeIntervalSince(capture.startedAt)
         )
-        let systemAudioExists = FileManager.default.fileExists(atPath: capture.systemAudioURL.path)
-        let microphoneExists = capture.microphoneURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let systemAudioDuration = await mediaDuration(of: capture.systemAudioURL)
+        let microphoneDuration: TimeInterval
+        if let microphoneURL = capture.microphoneURL {
+            microphoneDuration = await mediaDuration(of: microphoneURL)
+        } else {
+            microphoneDuration = 0
+        }
+        let systemAudioExists = systemAudioDuration > 0.5
+        let microphoneExists = microphoneDuration > 0.5
 
         var combinedAudioFile: String?
-        var saveErrors = errors.compactMap { error -> String? in
+        var saveErrors = capture.startupWarnings + errors.compactMap { error -> String? in
             if microphoneExists,
                let captureError = error as? CaptureError,
                case .noAudioReceived = captureError {
@@ -212,6 +310,15 @@ final class AppModel: ObservableObject {
         if let videoWarning = videoValidation.warning,
            !saveErrors.contains(videoWarning) {
             saveErrors.append(videoWarning)
+        }
+        if !systemAudioExists,
+           !saveErrors.contains(where: { $0.localizedCaseInsensitiveContains("meeting audio") }) {
+            saveErrors.append("Meeting audio wasn’t captured or couldn’t be saved.")
+        }
+        if capture.microphoneURL != nil,
+           !microphoneExists,
+           !saveErrors.contains(where: { $0.localizedCaseInsensitiveContains("microphone") }) {
+            saveErrors.append("Microphone capture started but did not produce a playable audio track.")
         }
         if systemAudioExists && !microphoneExists {
             combinedAudioFile = capture.systemAudioURL.lastPathComponent
@@ -241,17 +348,16 @@ final class AppModel: ObservableObject {
             combinedAudioFile: combinedAudioFile,
             transcriptFile: nil,
             transcript: nil,
-            summaryFile: nil,
-            summary: nil,
             transcriptionStatus: permissions.speechRecognition ? .pending : .permissionRequired,
             errorMessage: saveErrors.isEmpty ? nil : saveErrors.joined(separator: "\n")
         )
 
         activeCapture = nil
         activeMeetingTitle = nil
+        activeRecordingWasTriggeredAutomatically = false
         missedMeetingChecks = 0
         do { try library.save(meeting) }
-        catch { statusMessage = "Recording was saved, but its library entry failed: \(error.localizedDescription)" }
+        catch { statusMessage = "The recording was saved, but MeetMemento couldn’t add it to your library: \(error.localizedDescription)" }
         selectedMeetingID = meeting.id
 
         if permissions.speechRecognition {
@@ -262,13 +368,12 @@ final class AppModel: ObservableObject {
         let readyItems = [
             meeting.videoFile == nil ? nil : "video",
             meeting.combinedAudioFile == nil ? nil : "audio",
-            meeting.transcriptFile == nil ? nil : "transcript",
-            meeting.summaryFile == nil ? nil : "summary"
+            meeting.transcriptFile == nil ? nil : "transcript"
         ].compactMap { $0 }
         notify(
             title: "Zoom recording saved",
             body: readyItems.isEmpty
-                ? "The recording needs attention. Open MeetMemento for details."
+                ? "Some recording files need attention. Open MeetMemento for details."
                 : "Your \(readyItems.joined(separator: ", ")) \(readyItems.count == 1 ? "is" : "are") ready."
         )
     }
@@ -277,7 +382,7 @@ final class AppModel: ObservableObject {
         guard captureState == .idle else { return }
         refreshPermissions()
         guard permissions.speechRecognition else {
-            statusMessage = "Speech Recognition access is needed to create a transcript."
+            statusMessage = "Allow Speech Recognition to create a transcript."
             return
         }
         captureState = .transcribing
@@ -293,19 +398,6 @@ final class AppModel: ObservableObject {
         await retryTranscription(for: meeting)
     }
 
-    func ensureSummary(for original: MeetingRecord) {
-        guard original.summary == nil,
-              let transcript = original.transcript,
-              !transcript.isEmpty else { return }
-        let summary = MeetingSummarizer.summarize(transcript)
-        guard !summary.isEmpty else { return }
-        var meeting = original
-        meeting.summary = summary
-        meeting.summaryFile = "summary.txt"
-        do { try library.save(meeting) }
-        catch { statusMessage = "The summary could not be saved: \(error.localizedDescription)" }
-    }
-
     func download(_ kind: MeetingExportKind, for meeting: MeetingRecord) {
         guard let sourceURL = library.fileURL(for: meeting, kind: kind) else {
             statusMessage = "The \(kind.label.lowercased()) file is not available for this recording."
@@ -316,8 +408,8 @@ final class AppModel: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm"
         let panel = NSSavePanel()
-        panel.title = "Download Meeting \(kind.label)"
-        panel.prompt = "Download"
+        panel.title = "Save Meeting \(kind.label)"
+        panel.prompt = "Save"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = "MeetMemento-\(formatter.string(from: meeting.startedAt))-\(kind.rawValue).\(sourceURL.pathExtension)"
@@ -332,9 +424,9 @@ final class AppModel: ObservableObject {
                     if destinationURL.standardizedFileURL != sourceURL.standardizedFileURL {
                         try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
                     }
-                    self?.statusMessage = "\(kind.label) downloaded."
+                    self?.statusMessage = "\(kind.label) saved."
                 } catch {
-                    self?.statusMessage = "The \(kind.label.lowercased()) could not be downloaded: \(error.localizedDescription)"
+                    self?.statusMessage = "The \(kind.label.lowercased()) couldn’t be saved: \(error.localizedDescription)"
                 }
             }
         }
@@ -356,22 +448,22 @@ final class AppModel: ObservableObject {
     func rename(_ meeting: MeetingRecord, to proposedTitle: String) {
         let title = proposedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
-            statusMessage = "Enter a name for this recording."
+            statusMessage = "Enter a name for this meeting."
             return
         }
         var updatedMeeting = meeting
         updatedMeeting.title = String(title.prefix(120))
         do {
             try library.save(updatedMeeting)
-            statusMessage = "Recording renamed."
+            statusMessage = "Meeting renamed."
         } catch {
-            statusMessage = "The recording could not be renamed: \(error.localizedDescription)"
+            statusMessage = "The meeting couldn’t be renamed: \(error.localizedDescription)"
         }
     }
 
     func moveToTrash(_ meeting: MeetingRecord) {
         guard captureState == .idle else {
-            statusMessage = "Wait for the current recording or transcription to finish before deleting."
+            statusMessage = "Wait until recording and transcription finish before deleting this meeting."
             return
         }
         do {
@@ -379,17 +471,17 @@ final class AppModel: ObservableObject {
             if selectedMeetingID == meeting.id {
                 selectedMeetingID = nil
             }
-            statusMessage = "Recording moved to Trash. Open Recently Deleted in the sidebar to recover it."
+            statusMessage = "Meeting moved to Trash. Open Recently Deleted in the sidebar to recover it."
         } catch {
-            statusMessage = "The recording could not be moved to Trash: \(error.localizedDescription)"
+            statusMessage = "The meeting couldn’t be moved to Trash: \(error.localizedDescription)"
         }
     }
 
     func exportAll(for meeting: MeetingRecord) {
         let panel = NSOpenPanel()
-        panel.title = "Export Complete Meeting"
+        panel.title = "Export All Meeting Files"
         panel.prompt = "Export Here"
-        panel.message = "Choose a folder for the audio, video, transcript, summary, and recording details."
+        panel.message = "Choose a folder for the audio, video, transcript, and recording details."
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -405,9 +497,9 @@ final class AppModel: ObservableObject {
                 let destination = self.availableDestination(named: baseName, in: destinationDirectory)
                 do {
                     try FileManager.default.copyItem(at: self.library.folder(for: meeting), to: destination)
-                    self.statusMessage = "Complete meeting exported."
+                    self.statusMessage = "Meeting files exported."
                 } catch {
-                    self.statusMessage = "The complete meeting could not be exported: \(error.localizedDescription)"
+                    self.statusMessage = "The meeting files couldn’t be exported: \(error.localizedDescription)"
                 }
             }
         }
@@ -450,15 +542,12 @@ final class AppModel: ObservableObject {
                let discussionTitle = MeetingNamer.title(from: meeting.transcript ?? "") {
                 meeting.title = discussionTitle
             }
-            let summary = MeetingSummarizer.summarize(meeting.transcript ?? "")
-            meeting.summary = summary.isEmpty ? nil : summary
-            meeting.summaryFile = summary.isEmpty ? nil : "summary.txt"
             meeting.transcriptionStatus = .complete
             let allErrors = recordingErrors + failures
             meeting.errorMessage = allErrors.isEmpty ? nil : allErrors.joined(separator: "\n")
         }
         do { try library.save(meeting) }
-        catch { statusMessage = "Transcript completed but could not be saved: \(error.localizedDescription)" }
+        catch { statusMessage = "The transcript was created but couldn’t be saved: \(error.localizedDescription)" }
         return meeting
     }
 
@@ -487,6 +576,114 @@ final class AppModel: ObservableObject {
             }
             try? library.save(meeting)
         }
+    }
+
+    private func recoverInterruptedRecordings() async {
+        let fileManager = FileManager.default
+        let folders = (try? fileManager.contentsOfDirectory(
+            at: library.recordingsURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+
+        var recoveredMeetings: [MeetingRecord] = []
+        for folder in folders {
+            let values = try? folder.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true,
+                  !fileManager.fileExists(atPath: folder.appendingPathComponent("metadata.json").path),
+                  let startedAt = formatter.date(from: folder.lastPathComponent) else { continue }
+
+            let videoURL = folder.appendingPathComponent("zoom-screen.mp4")
+            let systemAudioURL = folder.appendingPathComponent("meeting-audio.m4a")
+            let microphoneURL = folder.appendingPathComponent("my-microphone.caf")
+            let combinedAudioURL = folder.appendingPathComponent("full-meeting-audio.m4a")
+
+            let videoExists = fileIsNonempty(videoURL)
+            let systemAudioExists = fileIsNonempty(systemAudioURL)
+            let microphoneExists = fileIsNonempty(microphoneURL)
+            let combinedAudioExists = fileIsNonempty(combinedAudioURL)
+            guard videoExists || systemAudioExists || microphoneExists || combinedAudioExists else { continue }
+
+            let mediaURLs = [systemAudioURL, microphoneURL, combinedAudioURL].filter(fileIsNonempty)
+            var durations: [TimeInterval] = []
+            for mediaURL in mediaURLs {
+                durations.append(await mediaDuration(of: mediaURL))
+            }
+            let mediaDuration = durations.max() ?? 0
+            let latestModification = ([videoURL] + mediaURLs).compactMap {
+                try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            }.max() ?? startedAt
+            let endedAt = mediaDuration > 0.5
+                ? startedAt.addingTimeInterval(mediaDuration)
+                : max(startedAt, latestModification)
+
+            let videoValidation = videoExists
+                ? await MeetingVideoValidator.validate(
+                    url: videoURL,
+                    expectedDuration: max(0, endedAt.timeIntervalSince(startedAt))
+                )
+                : MeetingVideoValidation(isPlayable: false, duration: 0, warning: nil)
+            // Do not turn empty placeholders from a failed capture start into
+            // visible meetings. Keep those files untouched for diagnostics.
+            guard mediaDuration > 0.5 || videoValidation.isPlayable else { continue }
+
+            var warnings = ["MeetMemento recovered this recording after the app closed unexpectedly."]
+            if let videoWarning = videoValidation.warning {
+                warnings.append(videoWarning)
+            }
+            if !systemAudioExists && microphoneExists {
+                warnings.append("Zoom system audio was not finalized, but your microphone audio is available.")
+            }
+
+            let hasTranscribableAudio = systemAudioExists || microphoneExists || combinedAudioExists
+            let meeting = MeetingRecord(
+                id: UUID(),
+                title: calendarMatcher.title(forMeetingAt: startedAt) ?? "Recovered Zoom meeting",
+                startedAt: startedAt,
+                endedAt: endedAt,
+                folderName: folder.lastPathComponent,
+                videoFile: videoValidation.isPlayable ? videoURL.lastPathComponent : nil,
+                systemAudioFile: systemAudioExists ? systemAudioURL.lastPathComponent : nil,
+                microphoneFile: microphoneExists ? microphoneURL.lastPathComponent : nil,
+                combinedAudioFile: combinedAudioExists ? combinedAudioURL.lastPathComponent : nil,
+                transcriptFile: nil,
+                transcript: nil,
+                transcriptionStatus: hasTranscribableAudio
+                    ? (permissions.speechRecognition ? .pending : .permissionRequired)
+                    : .failed,
+                errorMessage: warnings.joined(separator: "\n")
+            )
+            do {
+                try library.save(meeting)
+                recoveredMeetings.append(meeting)
+            } catch {
+                statusMessage = "MeetMemento found an interrupted recording but couldn’t restore it: \(error.localizedDescription)"
+            }
+        }
+
+        if let latest = recoveredMeetings.max(by: { $0.startedAt < $1.startedAt }) {
+            selectedMeetingID = latest.id
+            statusMessage = recoveredMeetings.count == 1
+                ? "An interrupted recording was recovered. Its available audio is ready, and you can retry transcription."
+                : "\(recoveredMeetings.count) interrupted recordings were recovered."
+        }
+    }
+
+    private func fileIsNonempty(_ url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else { return false }
+        return size.int64Value > 0
+    }
+
+    private func mediaDuration(of url: URL) async -> TimeInterval {
+        let asset = AVURLAsset(url: url)
+        guard let duration = try? await asset.load(.duration), duration.isNumeric else { return 0 }
+        let seconds = duration.seconds
+        return seconds.isFinite && seconds > 0 ? seconds : 0
     }
 
     private func transcribeTrack(fileURL: URL, source: String) async throws -> [TranscriptSegment] {

@@ -7,8 +7,8 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Recording") {
-                Toggle("Automatically record detected Zoom meetings", isOn: $settings.autoRecord)
-                Toggle("Include my microphone", isOn: $settings.includeMicrophone)
+                Toggle("Automatically record Zoom meetings", isOn: $settings.autoRecord)
+                Toggle("Include my voice", isOn: $settings.includeMicrophone)
                 Toggle("Launch MeetMemento when I log in", isOn: $settings.launchAtLogin)
             }
 
@@ -25,13 +25,13 @@ struct SettingsView: View {
                 PermissionRow(title: "Calendar (optional)", granted: model.permissions.calendar) {
                     Task { await model.requestCalendarAccess() }
                 }
-                Button("Refresh Permission Status") { model.refreshPermissions() }
+                Button("Check Access Again") { model.refreshPermissions() }
             }
 
             Section("Privacy") {
-                Text("Recordings remain on this Mac. If on-device recognition is unavailable for your language, macOS may use Apple’s speech service to transcribe audio.")
+                Text("Your recordings stay on this Mac. If on-device recognition isn’t available for your language, macOS may use Apple’s speech service to create the transcript.")
                     .foregroundStyle(.secondary)
-                Text("Calendar naming uses events available in the macOS Calendar app, including Outlook calendars connected there. Without Calendar access, titles are generated from the discussion transcript.")
+                Text("Meeting names can come from events in Apple Calendar, including connected Outlook calendars. Without Calendar access, MeetMemento creates names from the transcript.")
                     .foregroundStyle(.secondary)
                 Button("Open Recordings Folder") { model.openRecordingsFolder() }
             }

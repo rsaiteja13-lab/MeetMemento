@@ -14,16 +14,6 @@ struct MeetMementoChecks {
         precondition(TranscriptFormatter.format(segments) == expected)
         precondition(TranscriptFormatter.format([]) == "")
 
-        let summary = MeetingSummarizer.summarize(
-            "[00:00] Meeting: We agreed to launch the pilot on Friday.\n\n" +
-            "[00:12] You: Priya will prepare the customer list before Thursday.\n\n" +
-            "[00:28] Meeting: The pilot will include twenty customers and run for two weeks."
-        )
-        precondition(!summary.isEmpty)
-        precondition(summary.contains("pilot"))
-        precondition(!summary.contains("[00:"))
-        precondition(summary.split(separator: "\n").count <= 5)
-
         let legacyMetadata = """
         {
           "endedAt":"2026-09-06T19:13:10Z",
@@ -39,8 +29,6 @@ struct MeetMementoChecks {
         decoder.dateDecodingStrategy = .iso8601
         let legacyMeeting = try! decoder.decode(MeetingRecord.self, from: Data(legacyMetadata.utf8))
         precondition(legacyMeeting.combinedAudioFile == nil)
-        precondition(legacyMeeting.summary == nil)
-
         let generatedTitle = MeetingNamer.title(
             from: "[00:00] Meeting: Billing billing invoices invoices accruals adjustments."
         )

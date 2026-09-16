@@ -5,12 +5,12 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var library: MeetingLibrary
-    @State private var searchText = ""
-    @State private var meetingPendingDeletion: MeetingRecord?
+    @ViewState private var searchText = ""
+    @ViewState private var meetingPendingDeletion: MeetingRecord?
 
     var body: some View {
         Group {
-            if settings.consentAcknowledged {
+            if settings.onboardingCompleted {
                 mainView
             } else {
                 OnboardingView()
@@ -45,7 +45,10 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.top, 4)
                                 ForEach(day.meetings) { meeting in
-                                    MeetingRow(meeting: meeting) {
+                                    MeetingRow(
+                                        meeting: meeting,
+                                        isSelected: model.selectedMeetingID == meeting.id
+                                    ) {
                                         meetingPendingDeletion = meeting
                                     }
                                         .tag(meeting.id)
@@ -111,13 +114,24 @@ struct ContentView: View {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                 if model.captureState == .recording, model.selectedMeetingID == nil {
                     ActiveRecordingView()
+                        .transition(.opacity)
                 } else if let id = model.selectedMeetingID,
                    let meeting = library.meetings.first(where: { $0.id == id }) {
                     MeetingDetailView(meeting: meeting)
+                        .id(meeting.id)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .trailing)),
+                                removal: .opacity.combined(with: .move(edge: .leading))
+                            )
+                        )
                 } else {
                     HomeDashboardView()
+                        .transition(.opacity)
                 }
             }
+            .clipped()
+            .animation(.easeInOut(duration: 0.22), value: model.selectedMeetingID)
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -125,7 +139,7 @@ struct ContentView: View {
                 Button {
                     model.openRecordingsFolder()
                 } label: {
-                    Label("Recordings Folder", systemImage: "folder")
+                        Label("Open Recordings Folder", systemImage: "folder")
                 }
                 if model.captureState == .recording {
                     Button { Task { await model.stopRecording() } } label: {
@@ -162,7 +176,7 @@ struct ContentView: View {
                 meetingPendingDeletion = nil
             }
         } message: { meeting in
-            Text("“\(meeting.title)” and its audio, video, transcript, and summary will be moved together. You can recover it from macOS Trash.")
+            Text("“\(meeting.title)” and its audio, video, and transcript will be moved together. You can recover it from macOS Trash.")
         }
     }
 
@@ -202,7 +216,7 @@ private struct RecordingContextMenu: View {
             Button {
                 model.exportAll(for: meeting)
             } label: {
-                Label("Export Complete Meeting", systemImage: "square.and.arrow.up")
+                Label("Export All Files", systemImage: "square.and.arrow.up")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {
@@ -243,7 +257,7 @@ private struct ActiveRecordingView: View {
             }
 
             VStack(spacing: 8) {
-                Text("Recording your Zoom meeting")
+                Text("Recording Zoom")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                 if let capture = model.activeCapture {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -252,7 +266,7 @@ private struct ActiveRecordingView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("You can close this window. MeetMemento will keep recording in the background.")
+                Text("You can close this window—recording will continue in the background.")
                     .foregroundStyle(.secondary)
             }
 
@@ -274,7 +288,7 @@ private struct ActiveRecordingView: View {
             .tint(.red)
             .controlSize(.large)
 
-            Label("Record only with the consent required in your location.", systemImage: "person.2.fill")
+            Label("Make sure participants have been notified and any required consent is in place.", systemImage: "person.2.fill")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -312,6 +326,7 @@ private struct CaptureTile: View {
 
 private struct MeetingRow: View {
     let meeting: MeetingRecord
+    let isSelected: Bool
     let onDelete: () -> Void
 
     var body: some View {
@@ -351,7 +366,18 @@ private struct MeetingRow: View {
             .help("Move this recording to Trash")
             .disabled(meeting.transcriptionStatus == .processing)
         }
-        .padding(.vertical, 5)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 11)
+                .fill(isSelected ? Color.indigo.opacity(0.14) : Color.clear)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(isSelected ? Color.indigo.opacity(0.32) : Color.clear, lineWidth: 1)
+        }
+        .scaleEffect(isSelected ? 1 : 0.985)
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
     }
 
     private var durationText: String {
@@ -433,7 +459,7 @@ private struct SidebarRecorderCard: View {
                 .controlSize(.small)
             }
 
-            Toggle("Always record Zoom meetings", isOn: $settings.autoRecord)
+            Toggle("Record Zoom automatically", isOn: $settings.autoRecord)
                 .font(.caption)
         }
         .padding(12)
@@ -447,14 +473,14 @@ private struct SidebarRecorderCard: View {
     }
 
     private var statusTitle: String {
-        if model.captureState == .recording { return "Recording now" }
+        if model.captureState == .recording { return "Recording Zoom" }
         if !model.permissions.screenRecording { return "One-time setup needed" }
-        return settings.autoRecord ? "Always-on is active" : "Automatic recording is off"
+        return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
-        if model.captureState == .recording { return "Saving Zoom video and audio" }
-        if !model.permissions.screenRecording { return "Grant screen access once" }
+        if model.captureState == .recording { return "Saving video, audio, and transcript" }
+        if !model.permissions.screenRecording { return "Allow screen access to start recording" }
         return model.zoomState.label
     }
 }
@@ -501,7 +527,7 @@ private struct HomeDashboardView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Your meetings, remembered.")
                             .font(.system(size: 32, weight: .bold, design: .rounded))
-                        Text("MeetMemento quietly captures Zoom and keeps everything organized on this Mac.")
+                        Text("Automatically save Zoom video, audio, and transcripts—all organized on this Mac.")
                             .font(.title3)
                             .foregroundStyle(.secondary)
                     }
@@ -510,9 +536,9 @@ private struct HomeDashboardView: View {
                 RecorderHeroCard()
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-                    FeatureCard(icon: "video.fill", title: "Complete recording", detail: "Zoom video and system audio")
-                    FeatureCard(icon: "text.quote", title: "Searchable memory", detail: "Transcript and summary")
-                    FeatureCard(icon: "calendar", title: "Easy to revisit", detail: "Grouped by month and day")
+                    FeatureCard(icon: "video.fill", title: "Video and full audio", detail: "Zoom video and meeting audio")
+                    FeatureCard(icon: "text.quote", title: "Searchable transcript", detail: "Find exactly what was said")
+                    FeatureCard(icon: "calendar", title: "Easy to revisit", detail: "Organized by month and day")
                 }
 
                 if needsSetup {
@@ -537,7 +563,6 @@ private struct HomeDashboardView: View {
         !model.permissions.screenRecording
             || !model.permissions.microphone
             || !model.permissions.speechRecognition
-            || !model.permissions.calendar
     }
 }
 
@@ -567,7 +592,7 @@ private struct RecorderHeroCard: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
             } else {
-                Toggle("Always record", isOn: $settings.autoRecord)
+                Toggle("Record automatically", isOn: $settings.autoRecord)
                     .toggleStyle(.switch)
             }
         }
@@ -594,14 +619,14 @@ private struct RecorderHeroCard: View {
     }
 
     private var statusTitle: String {
-        if !model.permissions.screenRecording { return "Complete the one-time recording setup" }
-        return settings.autoRecord ? "Always-on recording is active" : "Automatic recording is off"
+        if !model.permissions.screenRecording { return "Finish the one-time setup" }
+        return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
-        if !model.permissions.screenRecording { return "MeetMemento needs macOS screen access once, then it stays quiet." }
+        if !model.permissions.screenRecording { return "Allow screen access once so MeetMemento can record Zoom." }
         return model.zoomState == .inMeeting
-            ? "A Zoom meeting is ready to record."
+            ? "Zoom meeting detected. Recording will start automatically."
             : "MeetMemento is monitoring Zoom in the background."
     }
 }
@@ -635,37 +660,44 @@ private struct PermissionSetupCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Make every recording complete")
-                    .font(.headline)
-                Text("Screen access is required. The other options enrich audio, transcripts, summaries, and names.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.title2)
+                    .foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Finish the one-time setup")
+                        .font(.headline)
+                    Text("Grant the remaining access in one guided flow. You’ll only see this again if macOS access changes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Continue Setup") {
+                    Task { await model.completeOnboarding() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.permissionSetupPhase != .ready && model.permissionSetupPhase != .needsSystemSettings)
             }
 
-            if !model.permissions.screenRecording {
-                PermissionActionRow(icon: "rectangle.inset.filled.and.person.filled", title: "Screen and Zoom audio", detail: "Required for automatic recording", button: "Set Up") {
-                    model.requestScreenRecordingAccess()
-                }
-            }
-            if settings.includeMicrophone && !model.permissions.microphone {
-                PermissionActionRow(icon: "mic.fill", title: "Your microphone", detail: "Includes your side of the conversation", button: "Allow") {
-                    Task { await model.requestMicrophoneAccess() }
-                }
-            }
-            if !model.permissions.speechRecognition {
-                PermissionActionRow(icon: "text.quote", title: "Speech Recognition", detail: "Creates transcripts and summaries", button: "Allow") {
-                    Task { await model.requestSpeechAccess() }
-                }
-            }
-            if !model.permissions.calendar {
-                PermissionActionRow(icon: "calendar", title: "Calendar", detail: "Uses Outlook event names when available", button: "Connect") {
-                    Task { await model.requestCalendarAccess() }
-                }
+            HStack(spacing: 16) {
+                PermissionStatusLabel(title: "Screen and meeting audio", granted: model.permissions.screenRecording)
+                PermissionStatusLabel(title: "Your voice", granted: !settings.includeMicrophone || model.permissions.microphone)
+                PermissionStatusLabel(title: "Transcript", granted: model.permissions.speechRecognition)
             }
         }
         .padding(18)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct PermissionStatusLabel: View {
+    let title: String
+    let granted: Bool
+
+    var body: some View {
+        Label(title, systemImage: granted ? "checkmark.circle.fill" : "circle.dashed")
+            .font(.caption)
+            .foregroundStyle(granted ? .green : .secondary)
     }
 }
 

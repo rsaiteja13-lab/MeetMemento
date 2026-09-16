@@ -8,6 +8,7 @@ final class AppSettings: ObservableObject {
         static let autoRecord = "autoRecord"
         static let includeMicrophone = "includeMicrophone"
         static let consentAcknowledged = "recordingConsentAcknowledgedV1"
+        static let onboardingCompleted = "onboardingCompletedV2"
         static let launchAtLogin = "launchAtLogin"
         static let screenPermissionConfigured = "screenPermissionConfiguredV1"
         static let screenPermissionPromptAttempted = "screenPermissionPromptAttemptedV1"
@@ -23,6 +24,10 @@ final class AppSettings: ObservableObject {
 
     @Published var consentAcknowledged: Bool {
         didSet { defaults.set(consentAcknowledged, forKey: Key.consentAcknowledged) }
+    }
+
+    @Published var onboardingCompleted: Bool {
+        didSet { defaults.set(onboardingCompleted, forKey: Key.onboardingCompleted) }
     }
 
     @Published var launchAtLogin: Bool {
@@ -52,12 +57,16 @@ final class AppSettings: ObservableObject {
             Key.autoRecord: true,
             Key.includeMicrophone: true,
             Key.launchAtLogin: true,
+            // Existing installations already completed the consent screen. New
+            // installations enter the coordinated first-run permission flow.
+            Key.onboardingCompleted: existingUser,
             Key.screenPermissionConfigured: existingUser,
             Key.screenPermissionPromptAttempted: existingUser
         ])
         autoRecord = defaults.bool(forKey: Key.autoRecord)
         includeMicrophone = defaults.bool(forKey: Key.includeMicrophone)
         consentAcknowledged = defaults.bool(forKey: Key.consentAcknowledged)
+        onboardingCompleted = defaults.bool(forKey: Key.onboardingCompleted)
         launchAtLogin = defaults.bool(forKey: Key.launchAtLogin)
         screenPermissionConfigured = defaults.bool(forKey: Key.screenPermissionConfigured)
         screenPermissionPromptAttempted = defaults.bool(forKey: Key.screenPermissionPromptAttempted)
@@ -79,7 +88,7 @@ final class AppSettings: ObservableObject {
             }
             loginItemError = nil
         } catch {
-            loginItemError = "Launch at login could not be changed: \(error.localizedDescription)"
+            loginItemError = "MeetMemento couldn’t update Launch at Login: \(error.localizedDescription)"
         }
     }
 }

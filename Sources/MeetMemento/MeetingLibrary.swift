@@ -35,9 +35,6 @@ final class MeetingLibrary: ObservableObject {
         if let transcript = meeting.transcript {
             try transcript.write(to: folder.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
         }
-        if let summary = meeting.summary {
-            try summary.write(to: folder.appendingPathComponent("summary.txt"), atomically: true, encoding: .utf8)
-        }
         reload()
     }
 
@@ -67,8 +64,6 @@ final class MeetingLibrary: ObservableObject {
             fileName = meeting.videoFile
         case .transcript:
             fileName = meeting.transcriptFile
-        case .summary:
-            fileName = meeting.summaryFile
         }
         guard let fileName else { return nil }
         let url = folder(for: meeting).appendingPathComponent(fileName)

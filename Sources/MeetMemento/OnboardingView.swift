@@ -3,8 +3,8 @@ import SwiftUI
 struct OnboardingView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
-    @State private var acceptsResponsibility = false
-    @State private var requesting = false
+    @ViewState private var acceptsResponsibility = false
+    @ViewState private var requesting = false
 
     var body: some View {
         VStack(spacing: 28) {
@@ -15,27 +15,27 @@ struct OnboardingView: View {
             VStack(spacing: 9) {
                 Text("Welcome to MeetMemento")
                     .font(.largeTitle.bold())
-                Text("Automatically preserve your Zoom screen, full meeting audio, and a searchable transcript.")
+                Text("Automatically save your Zoom video, full meeting audio, and a searchable transcript.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             VStack(alignment: .leading, spacing: 14) {
-                PermissionExplanation(icon: "rectangle.inset.filled.and.person.filled", title: "Zoom Video & Audio", detail: "Records Zoom’s windows and audio while excluding unrelated apps. Sound capture is independent of speakers, AirPods, or Bluetooth.")
-                PermissionExplanation(icon: "mic.fill", title: "Your Microphone", detail: "Follows the Mac’s current default input and reconnects if that device changes.")
-                PermissionExplanation(icon: "text.quote", title: "Speech Recognition", detail: "Creates the transcript. Video, audio, and transcripts are stored in your Mac’s Application Support folder.")
+                PermissionExplanation(icon: "rectangle.inset.filled.and.person.filled", title: "Zoom video and audio", detail: "Captures the Zoom screen and meeting audio whether you use speakers, AirPods, or another headset.")
+                PermissionExplanation(icon: "mic.fill", title: "Your voice", detail: "Includes your side of the conversation and follows the microphone you’re currently using.")
+                PermissionExplanation(icon: "text.quote", title: "Searchable transcript", detail: "Turns the saved audio into a transcript. Your recording stays on this Mac.")
             }
             .frame(maxWidth: 560)
 
             Toggle(isOn: $acceptsResponsibility) {
-                Text("I understand that recording laws vary, and I will notify participants and obtain any consent required where I am.")
+                Text("I’ll notify participants and obtain any consent required by local law or workplace policy.")
                     .font(.subheadline)
             }
             .toggleStyle(.checkbox)
             .frame(maxWidth: 600)
 
-            Button(requesting ? "Preparing MeetMemento…" : "Continue") {
+            Button(requesting ? setupButtonTitle : "Set Up MeetMemento") {
                 requesting = true
                 Task {
                     await model.completeOnboarding()
@@ -46,11 +46,24 @@ struct OnboardingView: View {
             .controlSize(.large)
             .disabled(!acceptsResponsibility || requesting)
 
-            Text("MeetMemento requests screen access once. Microphone, transcript, and calendar enhancements can be enabled individually from the dashboard.")
+            Text("Start once, then approve each macOS request as it appears. MeetMemento checks completion automatically and won’t ask again unless access changes.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .padding(48)
+    }
+
+    private var setupButtonTitle: String {
+        switch model.permissionSetupPhase {
+        case .microphone: return "Requesting microphone…"
+        case .speechRecognition: return "Requesting transcript access…"
+        case .calendar: return "Requesting calendar…"
+        case .screenRecording: return "Requesting screen access…"
+        case .needsSystemSettings: return "Finish in System Settings…"
+        case .complete: return "You’re all set"
+        case .ready: return "Preparing MeetMemento…"
+        }
     }
 }
 

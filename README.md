@@ -1,11 +1,19 @@
 # MeetMemento
 
-MeetMemento is a native macOS background app that detects Zoom meetings and preserves the Zoom screen, complete Zoom audio, your microphone, and a timestamped transcript locally.
+MeetMemento is a background app for macOS and Windows that detects Zoom meetings and preserves the Zoom screen, complete Zoom audio, your microphone, and a timestamped transcript locally.
 
 > [!IMPORTANT]
 > MeetMemento is designed for consensual recording. Tell meeting participants that you are recording and follow the laws and workplace policies that apply to you.
 
-## Install
+## Install on Windows
+
+1. Download the `x64.exe` installer for most Windows PCs or the `arm64.exe` installer for Windows on ARM.
+2. Open MeetMemento and complete its one-time setup. It checks automatic recording, microphone access, local transcript support, and launch at sign-in in one flow.
+3. Join Zoom normally. Closing the MeetMemento window leaves it ready in the Windows system tray.
+
+Windows capture uses system-output loopback, so it continues to receive meeting audio when the user changes between speakers, USB devices, and Bluetooth headphones. The Windows app stores files under `Videos\MeetMemento\Recordings`. See [Windows installation and verification](Windows/README.md) for package details and the complete test checklist.
+
+## Install on macOS
 
 ### Download a release
 
@@ -28,7 +36,7 @@ open Dist/MeetMemento.app
 
 The build script creates a universal app for both Apple silicon and Intel Macs. For normal use, move `MeetMemento.app` into `/Applications` before completing the permission setup.
 
-## What the MVP does
+## What the macOS app does
 
 - Detects an active Zoom meeting and begins recording automatically after onboarding.
 - Records Zoom's windows with an isolated H.264 writer, a monotonic meeting timeline, periodic still-frame keepalives, and automatic ScreenCaptureKit recovery so static or long meetings keep their full duration.

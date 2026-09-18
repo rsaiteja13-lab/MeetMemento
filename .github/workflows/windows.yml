@@ -1,0 +1,51 @@
+name: Windows checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: Windows
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: Windows/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests and safety checks
+        run: npm run verify
+
+      - name: Build Windows installers and portable packages
+        run: npm run dist:win
+
+      - name: Launch packaged app in smoke-test mode
+        shell: powershell
+        run: |
+          $process = Start-Process -FilePath ".\dist\win-unpacked\MeetMemento.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged app smoke test failed with exit code $($process.ExitCode)." }
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeetMemento-Windows-0.8.0
+          path: |
+            Windows/dist/MeetMemento-Windows-0.8.0-*.exe
+            Windows/dist/MeetMemento-Windows-0.8.0-*.zip
+          if-no-files-found: error

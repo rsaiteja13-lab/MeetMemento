@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' file: blob:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>MeetMemento</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div>
+          <div class="brand-name">MeetMemento</div>
+          <div class="brand-subtitle">Your meeting archive</div>
+        </div>
+      </div>
+
+      <section class="capture-card" aria-live="polite">
+        <div class="capture-status-row">
+          <span id="captureDot" class="status-dot"></span>
+          <span id="captureTitle">Ready for Zoom</span>
+        </div>
+        <p id="captureDescription">MeetMemento is watching for your next Zoom meeting.</p>
+        <button id="captureButton" class="primary-button wide" type="button">Record Zoom now</button>
+      </section>
+
+      <div class="library-heading">
+        <span>Recordings</span>
+        <span id="meetingCount" class="count-pill">0</span>
+      </div>
+      <nav id="meetingList" class="meeting-list" aria-label="Meeting recordings"></nav>
+
+      <div class="sidebar-footer">
+        <button id="openRecycleBin" class="text-button" type="button">
+          <span aria-hidden="true">↶</span> Recently Deleted
+        </button>
+        <button id="openSettings" class="text-button" type="button">
+          <span aria-hidden="true">⚙</span> Settings
+        </button>
+      </div>
+    </aside>
+
+    <main id="detailPane" class="detail-pane">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MEETING RECORDING</p>
+          <h1 id="meetingTitle">Your recordings will appear here</h1>
+          <p id="meetingMeta" class="meeting-meta">Join a Zoom meeting and MeetMemento will begin automatically.</p>
+        </div>
+        <div id="meetingActions" class="meeting-actions" hidden>
+          <button id="renameMeeting" class="secondary-button" type="button">Rename</button>
+          <button id="exportMeeting" class="primary-button" type="button">Download files</button>
+          <button id="deleteMeeting" class="secondary-button danger-button" type="button" title="Move recording to Recycle Bin">Delete</button>
+        </div>
+      </header>
+
+      <div id="statusBanner" class="status-banner" hidden></div>
+
+      <section id="emptyState" class="empty-state">
+        <div class="empty-illustration" aria-hidden="true">
+          <div class="empty-camera"></div>
+          <div class="empty-wave"></div>
+        </div>
+        <h2>No recording selected</h2>
+        <p>When a Zoom meeting starts, its video, audio, and transcript will be saved privately on this computer.</p>
+        <button id="emptyRecordButton" class="primary-button" type="button">Record an open Zoom meeting</button>
+      </section>
+
+      <section id="meetingDetail" class="meeting-detail" hidden>
+        <div class="video-card">
+          <video id="videoPlayer" controls preload="metadata"></video>
+          <div id="videoUnavailable" class="media-unavailable" hidden>
+            <span aria-hidden="true">▱</span>
+            <strong>Video is not available</strong>
+            <p>The audio and transcript may still be available below.</p>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <article class="content-card audio-card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">FULL RECORDING</p>
+                <h2>Meeting audio</h2>
+              </div>
+              <button id="openMeetingFolder" class="small-button" type="button">Show files</button>
+            </div>
+            <audio id="audioPlayer" controls preload="metadata"></audio>
+            <p id="audioUnavailable" class="inline-message" hidden>Audio was not captured for this recording.</p>
+          </article>
+
+          <article class="content-card transcript-card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">SEARCHABLE TEXT</p>
+                <h2>Transcript</h2>
+              </div>
+              <span id="transcriptBadge" class="state-badge">Pending</span>
+            </div>
+            <div id="transcriptContent" class="transcript-content"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="onboarding" class="onboarding" hidden>
+    <div class="setup-window">
+      <div class="setup-visual">
+        <div class="setup-logo"><span></span></div>
+        <p>MeetMemento for Windows</p>
+        <h1>Never lose the full meeting.</h1>
+        <p class="setup-lead">Automatically keep the Zoom screen, complete meeting audio, and a local transcript—even when you switch headphones.</p>
+        <div class="setup-features">
+          <div><span>✓</span><p><strong>Automatic capture</strong><br>Starts and stops with Zoom.</p></div>
+          <div><span>✓</span><p><strong>All audio outputs</strong><br>Speakers and headphones are covered.</p></div>
+          <div><span>✓</span><p><strong>Private by default</strong><br>Files stay on this computer.</p></div>
+        </div>
+      </div>
+      <div class="setup-form">
+        <p class="step-label">ONE-TIME SETUP</p>
+        <h2>Set it once. Meetings save themselves.</h2>
+        <p>Windows will ask for microphone access only if you include your voice. System audio and video are configured automatically.</p>
+
+        <label class="setup-option">
+          <input id="setupAutoRecord" type="checkbox" checked>
+          <span><strong>Record Zoom meetings automatically</strong><small>MeetMemento watches for Zoom while it runs in the background.</small></span>
+        </label>
+        <label class="setup-option">
+          <input id="setupMicrophone" type="checkbox" checked>
+          <span><strong>Include my microphone</strong><small>Keeps your side of the conversation if Zoom output does not include it.</small></span>
+        </label>
+        <label class="setup-option">
+          <input id="setupLogin" type="checkbox" checked>
+          <span><strong>Start MeetMemento when I sign in</strong><small>Closing the window leaves the app ready in the system tray.</small></span>
+        </label>
+        <label class="consent-row">
+          <input id="setupConsent" type="checkbox">
+          <span>I will follow applicable recording laws and notify meeting participants when required.</span>
+        </label>
+
+        <div id="setupProgress" class="setup-progress" hidden></div>
+        <button id="finishSetup" class="primary-button wide large" type="button">Finish setup</button>
+        <p class="privacy-note">No recordings or transcripts are uploaded by MeetMemento.</p>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form method="dialog">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
+      </div>
+      <label class="setting-row"><span><strong>Automatic recording</strong><small>Start when a Zoom meeting is detected.</small></span><input id="autoRecordSetting" type="checkbox"></label>
+      <label class="setting-row"><span><strong>Include microphone</strong><small>Capture your voice together with computer audio.</small></span><input id="microphoneSetting" type="checkbox"></label>
+      <label class="setting-row"><span><strong>Launch at sign-in</strong><small>Keep automatic recording ready after Windows starts.</small></span><input id="loginSetting" type="checkbox"></label>
+      <div class="settings-actions">
+        <button id="openRecordingsFolder" class="secondary-button" type="button">Open recordings folder</button>
+        <button id="checkSpeech" class="secondary-button" type="button">Check transcript support</button>
+      </div>
+      <p id="speechStatus" class="inline-message"></p>
+    </form>
+  </dialog>
+
+  <canvas id="captureCanvas" hidden></canvas>
+  <video id="captureSourceVideo" muted playsinline hidden></video>
+  <script src="renderer.js"></script>
+</body>
+</html>

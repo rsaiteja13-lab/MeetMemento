@@ -5,6 +5,8 @@ Dist/
 *.xcuserstate
 xcuserdata/
 
-# Separate local projects that share this parent folder.
-family-wealth-prototype/
-kin-finance/
+# Windows/Electron build outputs.
+Windows/node_modules/
+Windows/dist/
+Windows/.cache/
+Windows/npm-debug.log*

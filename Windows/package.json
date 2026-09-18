@@ -1,0 +1,67 @@
+{
+  "name": "meetmemento-windows",
+  "version": "0.8.0",
+  "description": "MeetMemento for Windows records Zoom video, loopback audio, microphone audio, and local transcripts.",
+  "main": "src/main.js",
+  "author": "MeetMemento",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check.js",
+    "verify": "npm run test && npm run check",
+    "dist:win": "npm run verify && electron-builder --win nsis zip --x64 --arm64"
+  },
+  "devDependencies": {
+    "electron": "44.4.2",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.meetmemento.windows",
+    "productName": "MeetMemento",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/transcribe.ps1",
+        "to": "transcribe.ps1"
+      }
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "win": {
+      "icon": "resources/icon.png",
+      "artifactName": "MeetMemento-Windows-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "MeetMemento"
+    }
+  }
+}

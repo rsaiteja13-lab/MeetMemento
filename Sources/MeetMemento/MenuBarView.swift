@@ -43,12 +43,12 @@ struct MenuBarView: View {
                 }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-            } else if !model.permissions.screenRecording {
+            } else if model.missingRequiredPermission != nil {
                 Button {
-                    model.requestScreenRecordingAccess()
+                    Task { await model.resolveNextMissingPermission() }
                 } label: {
                     Label(
-                        settings.onboardingCompleted ? "Restore Screen Access" : "Finish One-Time Setup",
+                        model.permissionActionTitle,
                         systemImage: "lock.open"
                     )
                         .frame(maxWidth: .infinity)
@@ -93,7 +93,7 @@ struct MenuBarView: View {
     private var statusTitle: String {
         if model.captureState == .recording { return "Recording Zoom" }
         if !model.permissions.screenRecording {
-            return settings.onboardingCompleted ? "Screen access needs attention" : "One-time setup needed"
+            return "Automatic recording is paused"
         }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
@@ -101,9 +101,7 @@ struct MenuBarView: View {
     private var statusDetail: String {
         if model.captureState == .recording { return "Saving video, audio, and transcript." }
         if !model.permissions.screenRecording {
-            return settings.onboardingCompleted
-                ? "Restore macOS screen access to resume recording."
-                : "Allow screen access to start recording."
+            return "Finish setup to start recording."
         }
         return model.zoomState.label
     }

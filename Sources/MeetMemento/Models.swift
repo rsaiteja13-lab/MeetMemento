@@ -111,6 +111,19 @@ struct PermissionSnapshot: Equatable {
 
     var captureReady: Bool { screenRecording }
     var allReady: Bool { screenRecording && microphone && speechRecognition }
+
+    func firstMissingRequiredPermission(includeMicrophone: Bool) -> RequiredPermission? {
+        if !screenRecording { return .screenRecording }
+        if includeMicrophone && !microphone { return .microphone }
+        if !speechRecognition { return .speechRecognition }
+        return nil
+    }
+}
+
+enum RequiredPermission: Equatable {
+    case screenRecording
+    case microphone
+    case speechRecognition
 }
 
 struct ActiveCapture {

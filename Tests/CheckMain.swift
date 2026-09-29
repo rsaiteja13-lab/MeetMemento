@@ -47,6 +47,14 @@ struct MeetMementoChecks {
         ))
         precondition(ZoomSignalClassifier.isMeetingWindowTitle("Zoom Webinar"))
         precondition(!ZoomSignalClassifier.isMeetingWindowTitle("Zoom Workplace"))
+
+        let noAccess = PermissionSnapshot()
+        precondition(noAccess.firstMissingRequiredPermission(includeMicrophone: true) == .screenRecording)
+        let screenOnly = PermissionSnapshot(screenRecording: true)
+        precondition(screenOnly.firstMissingRequiredPermission(includeMicrophone: true) == .microphone)
+        precondition(screenOnly.firstMissingRequiredPermission(includeMicrophone: false) == .speechRecognition)
+        let ready = PermissionSnapshot(screenRecording: true, microphone: true, speechRecognition: true)
+        precondition(ready.firstMissingRequiredPermission(includeMicrophone: true) == nil)
         print("MeetMemento checks passed")
     }
 }

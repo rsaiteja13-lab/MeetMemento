@@ -14,7 +14,7 @@ struct SettingsView: View {
 
             Section("Permissions") {
                 PermissionRow(title: "Screen Recording", granted: model.permissions.screenRecording) {
-                    Permissions.openPrivacySettings(.screenCapture)
+                    model.requestScreenRecordingAccess()
                 }
                 PermissionRow(title: "Microphone", granted: model.permissions.microphone) {
                     Task { await model.requestMicrophoneAccess() }
@@ -43,6 +43,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 560, height: 500)
         .padding()
+        .onAppear { model.refreshPermissions() }
     }
 }
 

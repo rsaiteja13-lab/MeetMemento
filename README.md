@@ -70,7 +70,7 @@ NOTARY_PROFILE="meetmemento-notary" \
 ./Scripts/release.sh
 ```
 
-The notarized universal ZIP is written to `Dist/MeetMemento-0.7.5.zip`.
+The notarized universal ZIP is written to `Dist/MeetMemento-<version>.zip`.
 
 ## Privacy and consent
 

@@ -16,9 +16,6 @@ struct ContentView: View {
                 OnboardingView()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.refreshPermissions()
-        }
     }
 
     private var filteredMeetings: [MeetingRecord] {
@@ -35,6 +32,26 @@ struct ContentView: View {
                 SidebarBrand()
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        model.selectedMeetingID = nil
+                    }
+                } label: {
+                    Label("Home", systemImage: model.selectedMeetingID == nil ? "house.fill" : "house")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(
+                            model.selectedMeetingID == nil ? Color.indigo.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 9)
+                        )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+                .accessibilityIdentifier("sidebar-home-button")
 
                 List(selection: $model.selectedMeetingID) {
                     ForEach(calendarGroups) { month in
@@ -135,7 +152,6 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                ToolbarRecorderStatus()
                 Button {
                     model.openRecordingsFolder()
                 } label: {
@@ -447,21 +463,6 @@ private struct SidebarRecorderCard: View {
                 Spacer()
             }
 
-            if !model.permissions.screenRecording {
-                Button {
-                    model.requestScreenRecordingAccess()
-                } label: {
-                    Label(
-                        settings.onboardingCompleted ? "Restore Screen Access" : "Finish One-Time Setup",
-                        systemImage: "lock.open"
-                    )
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
-                .controlSize(.small)
-            }
-
             Toggle("Record Zoom automatically", isOn: $settings.autoRecord)
                 .font(.caption)
         }
@@ -478,7 +479,7 @@ private struct SidebarRecorderCard: View {
     private var statusTitle: String {
         if model.captureState == .recording { return "Recording Zoom" }
         if !model.permissions.screenRecording {
-            return settings.onboardingCompleted ? "Screen access needs attention" : "One-time setup needed"
+            return "Automatic recording is paused"
         }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
@@ -486,43 +487,9 @@ private struct SidebarRecorderCard: View {
     private var statusDetail: String {
         if model.captureState == .recording { return "Saving video, audio, and transcript" }
         if !model.permissions.screenRecording {
-            return settings.onboardingCompleted
-                ? "Restore macOS screen access to resume recording"
-                : "Allow screen access to start recording"
+            return "Open Home to finish setup"
         }
         return model.zoomState.label
-    }
-}
-
-private struct ToolbarRecorderStatus: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var settings: AppSettings
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(label)
-                .font(.caption.weight(.semibold))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(color.opacity(0.12), in: Capsule())
-    }
-
-    private var color: Color {
-        if model.captureState == .recording { return .red }
-        if !model.permissions.screenRecording { return .orange }
-        return settings.autoRecord ? .green : .secondary
-    }
-
-    private var label: String {
-        if model.captureState == .recording { return "Recording" }
-        if !model.permissions.screenRecording {
-            return settings.onboardingCompleted ? "Access needed" : "Setup needed"
-        }
-        return settings.autoRecord ? "Monitoring Zoom" : "Manual mode"
     }
 }
 
@@ -552,11 +519,8 @@ private struct HomeDashboardView: View {
                     FeatureCard(icon: "calendar", title: "Easy to revisit", detail: "Organized by month and day")
                 }
 
-                if needsAccessAttention {
-                    PermissionSetupCard()
-                }
-
-                if let message = model.statusMessage {
+                if let message = model.statusMessage,
+                   model.missingRequiredPermission == nil {
                     Label(message, systemImage: "info.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -570,11 +534,6 @@ private struct HomeDashboardView: View {
         }
     }
 
-    private var needsAccessAttention: Bool {
-        !model.permissions.screenRecording
-            || (settings.includeMicrophone && !model.permissions.microphone)
-            || !model.permissions.speechRecognition
-    }
 }
 
 private struct RecorderHeroCard: View {
@@ -582,31 +541,41 @@ private struct RecorderHeroCard: View {
     @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(statusColor.opacity(0.16))
-                    .frame(width: 52, height: 52)
-                Image(systemName: statusIcon)
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(statusColor)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(statusTitle)
-                    .font(.title3.weight(.bold))
-                Text(statusDetail)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !model.permissions.screenRecording {
-                Button(settings.onboardingCompleted ? "Restore Access" : "Finish Setup") {
-                    model.requestScreenRecordingAccess()
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(statusColor.opacity(0.16))
+                        .frame(width: 52, height: 52)
+                    Image(systemName: statusIcon)
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(statusColor)
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(statusTitle)
+                        .font(.title3.weight(.bold))
+                    Text(statusDetail)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.missingRequiredPermission != nil {
+                    Button(model.permissionActionTitle) {
+                        Task { await model.resolveNextMissingPermission() }
+                    }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
-            } else {
-                Toggle("Record automatically", isOn: $settings.autoRecord)
-                    .toggleStyle(.switch)
+                } else {
+                    Toggle("Record automatically", isOn: $settings.autoRecord)
+                        .toggleStyle(.switch)
+                }
+            }
+
+            if model.missingRequiredPermission != nil {
+                HStack(spacing: 16) {
+                    PermissionStatusLabel(title: "Screen and meeting audio", granted: model.permissions.screenRecording)
+                    PermissionStatusLabel(title: "Your voice", granted: !settings.includeMicrophone || model.permissions.microphone)
+                    PermissionStatusLabel(title: "Transcript", granted: model.permissions.speechRecognition)
+                }
             }
         }
         .padding(20)
@@ -633,18 +602,25 @@ private struct RecorderHeroCard: View {
 
     private var statusTitle: String {
         if !model.permissions.screenRecording {
-            return settings.onboardingCompleted
-                ? "Screen access needs attention"
-                : "Finish the one-time setup"
+            return "Finish recording setup"
         }
+        if model.missingRequiredPermission != nil { return "Finish recording setup" }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
-        if !model.permissions.screenRecording {
-            return settings.onboardingCompleted
-                ? "macOS is not currently allowing MeetMemento to capture Zoom. Restore access once to resume recording."
-                : "Allow screen access once so MeetMemento can record Zoom."
+        switch model.missingRequiredPermission {
+        case .screenRecording:
+            if settings.screenPermissionRelaunchAttemptedForCurrentBuild {
+                return "Switch MeetMemento off and back on once in System Settings. The app will reopen and confirm the change automatically."
+            }
+            return "Turn on MeetMemento in Screen & System Audio Recording. The app will reopen once and confirm the change automatically."
+        case .microphone:
+            return "Allow microphone access so your side of the conversation is included."
+        case .speechRecognition:
+            return "Allow Speech Recognition so new recordings receive transcripts."
+        case nil:
+            break
         }
         return model.zoomState == .inMeeting
             ? "Zoom meeting detected. Recording will start automatically."
@@ -672,46 +648,6 @@ private struct FeatureCard: View {
         .padding(16)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 15))
         .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color(nsColor: .separatorColor).opacity(0.45)))
-    }
-}
-
-private struct PermissionSetupCard: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var settings: AppSettings
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.title2)
-                    .foregroundStyle(.indigo)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(settings.onboardingCompleted ? "Recording access needs attention" : "Finish the one-time setup")
-                        .font(.headline)
-                    Text(
-                        settings.onboardingCompleted
-                            ? "Your setup is saved, but macOS no longer reports all required access. Restore only the missing permission below."
-                            : "Grant the remaining access in one guided flow. You’ll only see this again if macOS access changes."
-                    )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(settings.onboardingCompleted ? "Restore Access" : "Continue Setup") {
-                    Task { await model.completeOnboarding() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.permissionSetupPhase != .ready && model.permissionSetupPhase != .needsSystemSettings)
-            }
-
-            HStack(spacing: 16) {
-                PermissionStatusLabel(title: "Screen and meeting audio", granted: model.permissions.screenRecording)
-                PermissionStatusLabel(title: "Your voice", granted: !settings.includeMicrophone || model.permissions.microphone)
-                PermissionStatusLabel(title: "Transcript", granted: model.permissions.speechRecognition)
-            }
-        }
-        .padding(18)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

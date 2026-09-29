@@ -12,6 +12,7 @@ final class AppSettings: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let screenPermissionConfigured = "screenPermissionConfiguredV1"
         static let screenPermissionPromptAttempted = "screenPermissionPromptAttemptedV1"
+        static let screenPermissionRelaunchVersion = "screenPermissionRelaunchVersionV1"
         static let loginItemRegistrationPath = "loginItemRegistrationPathV1"
         static let guardianRegistrationVersion = "guardianRegistrationVersionV1"
     }
@@ -78,15 +79,25 @@ final class AppSettings: ObservableObject {
         if launchAtLogin { updateLoginItem() }
     }
 
+    var screenPermissionRelaunchAttemptedForCurrentBuild: Bool {
+        defaults.string(forKey: Key.screenPermissionRelaunchVersion) == currentBuildVersion
+    }
+
+    func markScreenPermissionRelaunchAttempted() {
+        defaults.set(currentBuildVersion, forKey: Key.screenPermissionRelaunchVersion)
+    }
+
+    private var currentBuildVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+    }
+
     private func updateLoginItem() {
         guard #available(macOS 13.0, *) else { return }
         do {
             if launchAtLogin {
                 let currentPath = Bundle.main.bundleURL.standardizedFileURL.path
                 let registeredPath = defaults.string(forKey: Key.loginItemRegistrationPath)
-                let currentVersion = Bundle.main.object(
-                    forInfoDictionaryKey: "CFBundleVersion"
-                ) as? String ?? "unknown"
+                let currentVersion = currentBuildVersion
                 let registeredGuardianVersion = defaults.string(
                     forKey: Key.guardianRegistrationVersion
                 )

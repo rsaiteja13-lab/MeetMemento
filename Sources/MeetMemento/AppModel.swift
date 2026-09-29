@@ -35,7 +35,13 @@ final class AppModel: ObservableObject {
     private var detectorTimer: Timer?
     private var healthTimer: Timer?
     private var permissionRefreshTimer: Timer?
+    private var applicationActivationObserver: NSObjectProtocol?
+    private var workspaceActivationObserver: NSObjectProtocol?
+    private var permissionRelaunchTask: Task<Void, Never>?
     private var started = false
+    private var waitingForScreenSettings = false
+    private var screenSettingsWereOpened = false
+    private var attemptedScreenPermissionRelaunch = false
     private var missedMeetingChecks = 0
     private var suppressAutomaticRecordingUntilMeetingEnds = false
     private var activeMeetingTitle: String?
@@ -53,9 +59,23 @@ final class AppModel: ObservableObject {
     }
 
     var essentialPermissionsReady: Bool {
-        permissions.screenRecording
-            && (!settings.includeMicrophone || permissions.microphone)
-            && permissions.speechRecognition
+        missingRequiredPermission == nil
+    }
+
+    var missingRequiredPermission: RequiredPermission? {
+        permissions.firstMissingRequiredPermission(includeMicrophone: settings.includeMicrophone)
+    }
+
+    var permissionActionTitle: String {
+        switch missingRequiredPermission {
+        case .screenRecording:
+            return settings.screenPermissionRelaunchAttemptedForCurrentBuild
+                ? "Fix Screen Access"
+                : "Open Screen Settings"
+        case .microphone: return "Allow Microphone"
+        case .speechRecognition: return "Allow Transcription"
+        case nil: return "Access Confirmed"
+        }
     }
 
     func start() {
@@ -63,6 +83,7 @@ final class AppModel: ObservableObject {
         started = true
         refreshPermissions()
         finishPermissionSetupIfReady()
+        observePermissionChanges()
         AppDiagnostics.shared.record(
             "App started from \(Bundle.main.bundleURL.path); automatic=\(settings.autoRecord); screen=\(permissions.screenRecording); microphone=\(permissions.microphone); speech=\(permissions.speechRecognition)"
         )
@@ -75,7 +96,7 @@ final class AppModel: ObservableObject {
         healthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.recordHealthCheck() }
         }
-        permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshPermissions() }
         }
         if settings.consentAcknowledged {
@@ -116,9 +137,12 @@ final class AppModel: ObservableObject {
             // macOS has already shown its one-time Screen Recording prompt.
             // Open the relevant pane directly without also asking macOS to
             // display the redundant "Open System Settings" alert.
-            Permissions.openPrivacySettings(.screenCapture)
+            openScreenRecordingSettings()
         } else {
             settings.screenPermissionPromptAttempted = true
+            waitingForScreenSettings = true
+            screenSettingsWereOpened = false
+            attemptedScreenPermissionRelaunch = false
             permissions.screenRecording = Permissions.requestScreenRecording()
         }
         settings.screenPermissionConfigured = true
@@ -132,12 +156,6 @@ final class AppModel: ObservableObject {
         } else {
             permissionSetupPhase = .needsSystemSettings
             statusMessage = missingPermissionMessage
-            // Screen Recording has already presented exactly one route above.
-            // Only open another privacy pane when screen access is available
-            // and a different permission still needs attention.
-            if permissions.screenRecording {
-                openFirstMissingRequiredPermission()
-            }
         }
     }
 
@@ -149,18 +167,29 @@ final class AppModel: ObservableObject {
     }
 
     func openFirstMissingRequiredPermission() {
-        if !permissions.screenRecording {
-            Permissions.openPrivacySettings(.screenCapture)
-        } else if settings.includeMicrophone && !permissions.microphone {
-            Permissions.openPrivacySettings(.microphone)
-        } else if !permissions.speechRecognition {
-            Permissions.openPrivacySettings(.speechRecognition)
+        Task { await resolveNextMissingPermission() }
+    }
+
+    func resolveNextMissingPermission() async {
+        refreshPermissions()
+        switch missingRequiredPermission {
+        case .screenRecording:
+            requestScreenRecordingAccess()
+        case .microphone:
+            await requestMicrophoneAccess()
+        case .speechRecognition:
+            await requestSpeechAccess()
+        case nil:
+            finishPermissionSetupIfReady()
         }
     }
 
     var missingPermissionMessage: String {
         if !permissions.screenRecording {
-            return "Allow MeetMemento under Screen & System Audio Recording, then return here."
+            if settings.screenPermissionRelaunchAttemptedForCurrentBuild {
+                return "macOS still has an older MeetMemento approval. Switch MeetMemento off and back on once in Screen & System Audio Recording."
+            }
+            return "Turn on MeetMemento under Screen & System Audio Recording. When you return, MeetMemento will reopen once to apply access."
         }
         if settings.includeMicrophone && !permissions.microphone {
             return "Allow MeetMemento to use the microphone, then return here."
@@ -182,13 +211,40 @@ final class AppModel: ObservableObject {
             // After the first system prompt, restoration is performed in the
             // privacy pane. Calling CGRequestScreenCaptureAccess here as well
             // opens a second, redundant macOS window.
-            Permissions.openPrivacySettings(.screenCapture)
+            openScreenRecordingSettings()
         } else {
             settings.screenPermissionPromptAttempted = true
+            waitingForScreenSettings = true
+            screenSettingsWereOpened = false
+            attemptedScreenPermissionRelaunch = false
             _ = Permissions.requestScreenRecording()
         }
         settings.screenPermissionConfigured = true
         refreshPermissions()
+    }
+
+    func handleApplicationDidBecomeActive() {
+        refreshPermissions()
+        guard waitingForScreenSettings, screenSettingsWereOpened else { return }
+        guard !permissions.screenRecording else {
+            clearScreenPermissionRecoveryState()
+            return
+        }
+        guard !attemptedScreenPermissionRelaunch else { return }
+
+        attemptedScreenPermissionRelaunch = true
+        statusMessage = "Applying screen access… MeetMemento will reopen automatically."
+        permissionRelaunchTask?.cancel()
+        permissionRelaunchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled else { return }
+            self?.refreshPermissions()
+            guard self?.permissions.screenRecording == false else {
+                self?.clearScreenPermissionRecoveryState()
+                return
+            }
+            self?.relaunchToApplyScreenPermission()
+        }
     }
 
     func requestMicrophoneAccess() async {
@@ -198,6 +254,7 @@ final class AppModel: ObservableObject {
             statusMessage = "Allow microphone access to include your voice in meeting audio."
             Permissions.openPrivacySettings(.microphone)
         }
+        refreshPermissions()
     }
 
     func requestSpeechAccess() async {
@@ -207,6 +264,7 @@ final class AppModel: ObservableObject {
             statusMessage = "Allow Speech Recognition to create transcripts."
             Permissions.openPrivacySettings(.speechRecognition)
         }
+        refreshPermissions()
     }
 
     func requestCalendarAccess() async {
@@ -229,7 +287,81 @@ final class AppModel: ObservableObject {
                 "Permissions refreshed; screen=\(permissions.screenRecording); microphone=\(permissions.microphone); speech=\(permissions.speechRecognition)"
             )
         }
-        finishPermissionSetupIfReady()
+        if permissions.screenRecording {
+            clearScreenPermissionRecoveryState()
+            if captureState == .failed("Screen Recording access needed") {
+                captureState = .idle
+            }
+        }
+        reconcilePermissionSetupState()
+    }
+
+    private func reconcilePermissionSetupState() {
+        if settings.consentAcknowledged, essentialPermissionsReady {
+            finishPermissionSetupIfReady()
+        } else if settings.consentAcknowledged,
+                  permissionSetupPhase == .complete || permissionSetupPhase == .ready {
+            permissionSetupPhase = .needsSystemSettings
+        }
+    }
+
+    private func openScreenRecordingSettings() {
+        waitingForScreenSettings = true
+        screenSettingsWereOpened = false
+        attemptedScreenPermissionRelaunch = false
+        statusMessage = missingPermissionMessage
+        Permissions.openPrivacySettings(.screenCapture)
+    }
+
+    private func observePermissionChanges() {
+        guard applicationActivationObserver == nil else { return }
+        applicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleApplicationDidBecomeActive() }
+        }
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication,
+                  application.bundleIdentifier == "com.apple.systempreferences" else { return }
+            Task { @MainActor in
+                guard self?.waitingForScreenSettings == true else { return }
+                self?.screenSettingsWereOpened = true
+            }
+        }
+    }
+
+    private func clearScreenPermissionRecoveryState() {
+        waitingForScreenSettings = false
+        screenSettingsWereOpened = false
+        attemptedScreenPermissionRelaunch = false
+        permissionRelaunchTask?.cancel()
+        permissionRelaunchTask = nil
+    }
+
+    private func relaunchToApplyScreenPermission() {
+        AppDiagnostics.shared.record("Relaunching once so macOS can apply Screen Recording access")
+        settings.markScreenPermissionRelaunchAttempted()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            Task { @MainActor in
+                if let error {
+                    self.attemptedScreenPermissionRelaunch = false
+                    self.statusMessage = "MeetMemento couldn’t reopen automatically: \(error.localizedDescription). Reopen it once to apply screen access."
+                    AppDiagnostics.shared.record("Permission relaunch failed: \(error.localizedDescription)")
+                } else {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+        }
     }
 
     func refreshZoomState() {

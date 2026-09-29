@@ -22,4 +22,7 @@ jobs:
       - name: Build app
         env:
           ARCHITECTURES: ${{ runner.arch == 'ARM64' && 'arm64' || 'x86_64' }}
+          # CI only verifies compilation. This artifact must never be published
+          # because an ad-hoc signature does not preserve macOS permissions.
+          ALLOW_ADHOC_SIGNING: "1"
         run: ./Scripts/build-app.sh

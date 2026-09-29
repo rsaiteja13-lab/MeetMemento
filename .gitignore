@@ -5,6 +5,23 @@ Dist/
 *.xcuserstate
 xcuserdata/
 
+# Never commit local signing identities or private certificate material.
+*.key
+*.pem
+*.p12
+*.cer
+*.crt
+
+# Never commit meeting recordings, transcripts, or runtime diagnostics.
+Recordings/
+*.mp4
+*.mov
+*.m4a
+*.caf
+*.wav
+transcript.txt
+app-diagnostics*.log
+
 # Windows/Electron build outputs.
 Windows/node_modules/
 Windows/dist/

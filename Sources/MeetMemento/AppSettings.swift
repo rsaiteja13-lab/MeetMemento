@@ -12,6 +12,8 @@ final class AppSettings: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let screenPermissionConfigured = "screenPermissionConfiguredV1"
         static let screenPermissionPromptAttempted = "screenPermissionPromptAttemptedV1"
+        static let loginItemRegistrationPath = "loginItemRegistrationPathV1"
+        static let guardianRegistrationVersion = "guardianRegistrationVersionV1"
     }
 
     @Published var autoRecord: Bool {
@@ -80,15 +82,49 @@ final class AppSettings: ObservableObject {
         guard #available(macOS 13.0, *) else { return }
         do {
             if launchAtLogin {
-                if SMAppService.mainApp.status != .enabled {
+                let currentPath = Bundle.main.bundleURL.standardizedFileURL.path
+                let registeredPath = defaults.string(forKey: Key.loginItemRegistrationPath)
+                let currentVersion = Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "unknown"
+                let registeredGuardianVersion = defaults.string(
+                    forKey: Key.guardianRegistrationVersion
+                )
+                let registrationChanged = registeredPath != currentPath
+                    || registeredGuardianVersion != currentVersion
+                if SMAppService.mainApp.status == .enabled,
+                   registrationChanged {
+                    try SMAppService.mainApp.unregister()
+                }
+                if SMAppService.mainApp.status == .notRegistered {
                     try SMAppService.mainApp.register()
                 }
-            } else if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
+                try BackgroundGuardianManager.install(
+                    for: Bundle.main.bundleURL,
+                    forceReload: registrationChanged
+                )
+                defaults.set(currentPath, forKey: Key.loginItemRegistrationPath)
+                defaults.set(currentVersion, forKey: Key.guardianRegistrationVersion)
+                if SMAppService.mainApp.status == .requiresApproval {
+                    loginItemError = "Allow MeetMemento under General → Login Items so automatic recording can stay available."
+                    AppDiagnostics.shared.record("Background launch is waiting for approval in Login Items")
+                    return
+                }
+            } else {
+                if SMAppService.mainApp.status == .enabled {
+                    try SMAppService.mainApp.unregister()
+                }
+                BackgroundGuardianManager.uninstall()
+                defaults.removeObject(forKey: Key.loginItemRegistrationPath)
+                defaults.removeObject(forKey: Key.guardianRegistrationVersion)
             }
             loginItemError = nil
+            AppDiagnostics.shared.record(
+                "Persistent background launch \(launchAtLogin ? "enabled" : "disabled") for \(Bundle.main.bundleURL.path)"
+            )
         } catch {
             loginItemError = "MeetMemento couldn’t update Launch at Login: \(error.localizedDescription)"
+            AppDiagnostics.shared.record("Launch-at-login update failed: \(error.localizedDescription)")
         }
     }
 }

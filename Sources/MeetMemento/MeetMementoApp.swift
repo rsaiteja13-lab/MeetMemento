@@ -76,6 +76,10 @@ final class MeetMementoAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDiagnostics.shared.record("App terminated")
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, model.activeCapture != nil else { return .terminateNow }
         guard !isFinishingActiveRecording else { return .terminateLater }

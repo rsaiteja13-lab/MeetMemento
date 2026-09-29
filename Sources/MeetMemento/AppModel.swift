@@ -33,12 +33,16 @@ final class AppModel: ObservableObject {
     private let detector = ZoomMeetingDetector()
     private let captureController = MeetingCaptureController()
     private var detectorTimer: Timer?
+    private var healthTimer: Timer?
+    private var permissionRefreshTimer: Timer?
     private var started = false
     private var missedMeetingChecks = 0
     private var suppressAutomaticRecordingUntilMeetingEnds = false
     private var activeMeetingTitle: String?
     private var activeRecordingWasTriggeredAutomatically = false
     private var didAuditSavedVideos = false
+    private var lastReportedZoomState: ZoomMeetingState?
+    private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
 
     var canStartRecording: Bool {
         activeCapture == nil && captureState != .starting && captureState != .stopping && captureState != .transcribing
@@ -59,11 +63,20 @@ final class AppModel: ObservableObject {
         started = true
         refreshPermissions()
         finishPermissionSetupIfReady()
+        AppDiagnostics.shared.record(
+            "App started from \(Bundle.main.bundleURL.path); automatic=\(settings.autoRecord); screen=\(permissions.screenRecording); microphone=\(permissions.microphone); speech=\(permissions.speechRecognition)"
+        )
         refreshZoomState()
         // A one-second check catches brief calls and Zoom helper processes that
         // may exist for only a few seconds during short test meetings.
         detectorTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshZoomState() }
+        }
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.recordHealthCheck() }
+        }
+        permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPermissions() }
         }
         if settings.consentAcknowledged {
             settings.applyLoginItemPreference()
@@ -96,8 +109,18 @@ final class AppModel: ObservableObject {
         permissions.calendar = await Permissions.requestCalendar()
 
         permissionSetupPhase = .screenRecording
-        permissions.screenRecording = Permissions.requestScreenRecording()
-        settings.screenPermissionPromptAttempted = true
+        let screenPromptWasPreviouslyAttempted = settings.screenPermissionPromptAttempted
+        if permissions.screenRecording {
+            // Nothing to present. The current executable already has access.
+        } else if screenPromptWasPreviouslyAttempted {
+            // macOS has already shown its one-time Screen Recording prompt.
+            // Open the relevant pane directly without also asking macOS to
+            // display the redundant "Open System Settings" alert.
+            Permissions.openPrivacySettings(.screenCapture)
+        } else {
+            settings.screenPermissionPromptAttempted = true
+            permissions.screenRecording = Permissions.requestScreenRecording()
+        }
         settings.screenPermissionConfigured = true
         settings.applyLoginItemPreference()
         refreshPermissions()
@@ -109,7 +132,12 @@ final class AppModel: ObservableObject {
         } else {
             permissionSetupPhase = .needsSystemSettings
             statusMessage = missingPermissionMessage
-            openFirstMissingRequiredPermission()
+            // Screen Recording has already presented exactly one route above.
+            // Only open another privacy pane when screen access is available
+            // and a different permission still needs attention.
+            if permissions.screenRecording {
+                openFirstMissingRequiredPermission()
+            }
         }
     }
 
@@ -144,16 +172,23 @@ final class AppModel: ObservableObject {
     }
 
     func requestScreenRecordingAccess() {
-        // The persisted "prompt attempted" flag can outlive a replaced build or
-        // a manually reset TCC record. Always ask macOS for the current signed
-        // executable; macOS itself suppresses duplicate prompts after a decision.
-        let granted = Permissions.requestScreenRecording()
-        settings.screenPermissionPromptAttempted = true
+        refreshPermissions()
+        guard !permissions.screenRecording else {
+            finishPermissionSetupIfReady()
+            return
+        }
+
+        if settings.screenPermissionPromptAttempted {
+            // After the first system prompt, restoration is performed in the
+            // privacy pane. Calling CGRequestScreenCaptureAccess here as well
+            // opens a second, redundant macOS window.
+            Permissions.openPrivacySettings(.screenCapture)
+        } else {
+            settings.screenPermissionPromptAttempted = true
+            _ = Permissions.requestScreenRecording()
+        }
         settings.screenPermissionConfigured = true
         refreshPermissions()
-        if !granted && !permissions.screenRecording {
-            Permissions.openPrivacySettings(.screenCapture)
-        }
     }
 
     func requestMicrophoneAccess() async {
@@ -187,12 +222,22 @@ final class AppModel: ObservableObject {
         // Always trust macOS for the current executable. A persisted setup flag
         // can outlive a rebuilt or replaced app and otherwise report a stale
         // permission as granted, causing an automatic recording to fail silently.
-        permissions = Permissions.snapshot()
+        let currentPermissions = Permissions.snapshot()
+        if currentPermissions != permissions {
+            permissions = currentPermissions
+            AppDiagnostics.shared.record(
+                "Permissions refreshed; screen=\(permissions.screenRecording); microphone=\(permissions.microphone); speech=\(permissions.speechRecognition)"
+            )
+        }
         finishPermissionSetupIfReady()
     }
 
     func refreshZoomState() {
         zoomState = detector.currentState()
+        if lastReportedZoomState != zoomState {
+            AppDiagnostics.shared.record("Zoom state changed to \(zoomState.label)")
+            lastReportedZoomState = zoomState
+        }
 
         if zoomState == .inMeeting {
             missedMeetingChecks = 0
@@ -207,6 +252,7 @@ final class AppModel: ObservableObject {
                capturePermissionsReady,
                !suppressAutomaticRecordingUntilMeetingEnds,
                canStartRecording {
+                AppDiagnostics.shared.record("Automatic recording requested")
                 Task { await startRecording(triggeredAutomatically: true) }
             }
         } else {
@@ -229,11 +275,13 @@ final class AppModel: ObservableObject {
         guard canStartRecording else { return }
         guard settings.consentAcknowledged else {
             statusMessage = "Confirm the recording consent reminder before starting."
+            AppDiagnostics.shared.record("Recording did not start because consent is incomplete")
             return
         }
         refreshPermissions()
         guard permissions.screenRecording else {
             captureState = .failed("Screen Recording access needed")
+            AppDiagnostics.shared.record("Recording did not start because Screen Recording access is unavailable")
             return
         }
         captureState = .starting
@@ -258,6 +306,9 @@ final class AppModel: ObservableObject {
             settings.screenPermissionConfigured = true
             selectedMeetingID = nil
             captureState = .recording
+            AppDiagnostics.shared.record(
+                "Recording started; automatic=\(triggeredAutomatically); microphone=\(capture.microphoneURL != nil)"
+            )
             if triggeredAutomatically {
                 notify(title: "Zoom recording started", body: "Confirm that everyone in the meeting has consented.")
             }
@@ -269,6 +320,7 @@ final class AppModel: ObservableObject {
             activeRecordingWasTriggeredAutomatically = false
             captureState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
+            AppDiagnostics.shared.record("Recording startup failed: \(error.localizedDescription)")
             if isScreenPermissionError(error) {
                 settings.screenPermissionConfigured = false
                 permissions.screenRecording = false
@@ -336,7 +388,7 @@ final class AppModel: ObservableObject {
             }
         }
 
-        var meeting = MeetingRecord(
+        let meeting = MeetingRecord(
             id: capture.id,
             title: activeMeetingTitle ?? "Zoom meeting",
             startedAt: capture.startedAt,
@@ -360,34 +412,39 @@ final class AppModel: ObservableObject {
         catch { statusMessage = "The recording was saved, but MeetMemento couldn’t add it to your library: \(error.localizedDescription)" }
         selectedMeetingID = meeting.id
 
-        if permissions.speechRecognition {
-            captureState = .transcribing
-            meeting = await transcribe(meeting)
-        }
         captureState = .idle
         let readyItems = [
             meeting.videoFile == nil ? nil : "video",
-            meeting.combinedAudioFile == nil ? nil : "audio",
-            meeting.transcriptFile == nil ? nil : "transcript"
+            meeting.combinedAudioFile == nil ? nil : "audio"
         ].compactMap { $0 }
         notify(
             title: "Zoom recording saved",
             body: readyItems.isEmpty
                 ? "Some recording files need attention. Open MeetMemento for details."
-                : "Your \(readyItems.joined(separator: ", ")) \(readyItems.count == 1 ? "is" : "are") ready."
+                : permissions.speechRecognition
+                    ? "Your \(readyItems.joined(separator: ", ")) \(readyItems.count == 1 ? "is" : "are") ready. The transcript is being created in the background."
+                    : "Your \(readyItems.joined(separator: ", ")) \(readyItems.count == 1 ? "is" : "are") ready."
         )
+        AppDiagnostics.shared.record(
+            "Recording saved; video=\(meeting.videoFile != nil); audio=\(meeting.combinedAudioFile != nil); transcriptPending=\(permissions.speechRecognition); warnings=\(saveErrors.count)"
+        )
+        if permissions.speechRecognition {
+            queueTranscription(for: meeting, notifyWhenComplete: true)
+        }
     }
 
     func retryTranscription(for meeting: MeetingRecord) async {
-        guard captureState == .idle else { return }
         refreshPermissions()
         guard permissions.speechRecognition else {
             statusMessage = "Allow Speech Recognition to create a transcript."
             return
         }
-        captureState = .transcribing
-        _ = await transcribe(meeting)
-        captureState = .idle
+        guard transcriptionTasks[meeting.id] == nil else {
+            statusMessage = "The transcript is already being created."
+            return
+        }
+        statusMessage = "Creating the transcript in the background…"
+        queueTranscription(for: meeting, notifyWhenComplete: true)
     }
 
     func requestSpeechAndRetry(for meeting: MeetingRecord) async {
@@ -521,14 +578,26 @@ final class AppModel: ObservableObject {
         var segments: [TranscriptSegment] = []
         var failures: [String] = []
 
-        if let file = meeting.systemAudioFile {
+        if let file = meeting.combinedAudioFile {
             do {
-                segments += try await transcribeTrack(fileURL: folder.appendingPathComponent(file), source: "Meeting")
+                segments += try await transcribeTrack(
+                    fileURL: folder.appendingPathComponent(file),
+                    source: "Meeting"
+                )
+            } catch { failures.append("Full meeting audio: \(error.localizedDescription)") }
+        } else if let file = meeting.systemAudioFile {
+            do {
+                segments += try await transcribeTrack(
+                    fileURL: folder.appendingPathComponent(file),
+                    source: "Meeting"
+                )
             } catch { failures.append("Meeting audio: \(error.localizedDescription)") }
-        }
-        if let file = meeting.microphoneFile {
+        } else if let file = meeting.microphoneFile {
             do {
-                segments += try await transcribeTrack(fileURL: folder.appendingPathComponent(file), source: "You")
+                segments += try await transcribeTrack(
+                    fileURL: folder.appendingPathComponent(file),
+                    source: "You"
+                )
             } catch { failures.append("Microphone: \(error.localizedDescription)") }
         }
 
@@ -549,6 +618,35 @@ final class AppModel: ObservableObject {
         do { try library.save(meeting) }
         catch { statusMessage = "The transcript was created but couldn’t be saved: \(error.localizedDescription)" }
         return meeting
+    }
+
+    private func queueTranscription(for meeting: MeetingRecord, notifyWhenComplete: Bool) {
+        guard transcriptionTasks[meeting.id] == nil else { return }
+        let meetingID = meeting.id
+        transcriptionTasks[meetingID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let completedMeeting = await self.transcribe(meeting)
+            self.transcriptionTasks[meetingID] = nil
+            if completedMeeting.transcriptionStatus == .complete {
+                self.statusMessage = nil
+                self.recordTranscriptReady(completedMeeting)
+                if notifyWhenComplete {
+                    self.notify(
+                        title: "Transcript ready",
+                        body: "The transcript for \(completedMeeting.title) is ready."
+                    )
+                }
+            } else {
+                self.statusMessage = "The recording was saved, but the transcript could not be completed. You can retry it later."
+                AppDiagnostics.shared.record(
+                    "Transcript failed for \(meetingID.uuidString); recording remains available"
+                )
+            }
+        }
+    }
+
+    private func recordTranscriptReady(_ meeting: MeetingRecord) {
+        AppDiagnostics.shared.record("Transcript ready for \(meeting.id.uuidString)")
     }
 
     private func auditSavedVideos() async {
@@ -691,6 +789,7 @@ final class AppModel: ObservableObject {
         defer { AudioChunker.removeTemporaryChunks(chunks) }
         var combined: [TranscriptSegment] = []
         var firstMeaningfulError: Error?
+        var consecutiveTimeouts = 0
 
         for chunk in chunks {
             do {
@@ -703,8 +802,13 @@ final class AppModel: ObservableObject {
                         text: $0.text
                     )
                 }
+                consecutiveTimeouts = 0
             } catch TranscriptionError.noSpeech {
                 continue
+            } catch TranscriptionError.timedOut {
+                if firstMeaningfulError == nil { firstMeaningfulError = TranscriptionError.timedOut }
+                consecutiveTimeouts += 1
+                if consecutiveTimeouts >= 2 { break }
             } catch {
                 if firstMeaningfulError == nil { firstMeaningfulError = error }
             }
@@ -723,6 +827,12 @@ final class AppModel: ObservableObject {
         content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private func recordHealthCheck() {
+        AppDiagnostics.shared.record(
+            "Heartbeat; zoom=\(zoomState.label); capture=\(captureState.label); automatic=\(settings.autoRecord); screen=\(permissions.screenRecording)"
+        )
     }
 
     private func isScreenPermissionError(_ error: Error) -> Bool {

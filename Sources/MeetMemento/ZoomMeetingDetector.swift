@@ -12,15 +12,17 @@ struct ZoomMeetingDetector {
         }
 
         // Modern Zoom keeps `caphost` alive outside meetings, so it is not a
-        // reliable meeting signal. The older CptHost helper was meeting-only.
-        let hasLegacyMeetingHelper = applications.contains { app in
+        // reliable meeting signal. Meeting-only helpers remain high-confidence.
+        let hasMeetingHelper = applications.contains { app in
             let bundleID = app.bundleIdentifier?.lowercased() ?? ""
             let name = app.localizedName?.lowercased() ?? ""
-            return name == "cpthost"
-                || bundleID.contains("zoom") && bundleID.contains("cpthost")
+            return ZoomSignalClassifier.isMeetingHelper(
+                bundleIdentifier: bundleID,
+                localizedName: name
+            )
         }
 
-        if hasLegacyMeetingHelper { return .inMeeting }
+        if hasMeetingHelper { return .inMeeting }
         guard !zoomApps.isEmpty else { return .notRunning }
 
         let zoomPIDs = Set(zoomApps.map(\.processIdentifier))
@@ -39,12 +41,7 @@ struct ZoomMeetingDetector {
 
             let title = (window[kCGWindowName as String] as? String ?? "").lowercased()
             let owner = (window[kCGWindowOwnerName as String] as? String ?? "").lowercased()
-            let isMeetingTitle = title.contains("zoom meeting")
-                || title.hasPrefix("meeting")
-                || title.contains("in-meeting")
-                || title.contains("participants")
-                || title.contains("waiting room")
-                || title.contains("screen share")
+            let isMeetingTitle = ZoomSignalClassifier.isMeetingWindowTitle(title)
             if owner.contains("zoom") && isMeetingTitle { return .inMeeting }
         }
 

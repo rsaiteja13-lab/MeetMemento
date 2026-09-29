@@ -33,6 +33,20 @@ struct MeetMementoChecks {
             from: "[00:00] Meeting: Billing billing invoices invoices accruals adjustments."
         )
         precondition(generatedTitle == "Billing · Invoices · Accruals")
+        precondition(ZoomSignalClassifier.isMeetingHelper(
+            bundleIdentifier: "us.zoom.CptHost",
+            localizedName: "CptHost"
+        ))
+        precondition(ZoomSignalClassifier.isMeetingHelper(
+            bundleIdentifier: "us.zoom.zCCIMeetingHost",
+            localizedName: "zCCIMeetingHost"
+        ))
+        precondition(!ZoomSignalClassifier.isMeetingHelper(
+            bundleIdentifier: "us.zoom.caphost",
+            localizedName: "caphost"
+        ))
+        precondition(ZoomSignalClassifier.isMeetingWindowTitle("Zoom Webinar"))
+        precondition(!ZoomSignalClassifier.isMeetingWindowTitle("Zoom Workplace"))
         print("MeetMemento checks passed")
     }
 }

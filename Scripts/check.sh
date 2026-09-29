@@ -16,6 +16,7 @@ swiftc \
     "$PROJECT_DIR/Sources/MeetMemento/Models.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/TranscriptFormatter.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/MeetingNamer.swift" \
+    "$PROJECT_DIR/Sources/MeetMemento/ZoomSignalClassifier.swift" \
     "$PROJECT_DIR/Tests/CheckMain.swift" \
     -o "$CHECK_BINARY"
 "$CHECK_BINARY"

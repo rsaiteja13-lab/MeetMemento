@@ -451,7 +451,10 @@ private struct SidebarRecorderCard: View {
                 Button {
                     model.requestScreenRecordingAccess()
                 } label: {
-                    Label("Finish one-time setup", systemImage: "lock.open")
+                    Label(
+                        settings.onboardingCompleted ? "Restore Screen Access" : "Finish One-Time Setup",
+                        systemImage: "lock.open"
+                    )
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -474,13 +477,19 @@ private struct SidebarRecorderCard: View {
 
     private var statusTitle: String {
         if model.captureState == .recording { return "Recording Zoom" }
-        if !model.permissions.screenRecording { return "One-time setup needed" }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted ? "Screen access needs attention" : "One-time setup needed"
+        }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
         if model.captureState == .recording { return "Saving video, audio, and transcript" }
-        if !model.permissions.screenRecording { return "Allow screen access to start recording" }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted
+                ? "Restore macOS screen access to resume recording"
+                : "Allow screen access to start recording"
+        }
         return model.zoomState.label
     }
 }
@@ -510,7 +519,9 @@ private struct ToolbarRecorderStatus: View {
 
     private var label: String {
         if model.captureState == .recording { return "Recording" }
-        if !model.permissions.screenRecording { return "Setup needed" }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted ? "Access needed" : "Setup needed"
+        }
         return settings.autoRecord ? "Monitoring Zoom" : "Manual mode"
     }
 }
@@ -541,7 +552,7 @@ private struct HomeDashboardView: View {
                     FeatureCard(icon: "calendar", title: "Easy to revisit", detail: "Organized by month and day")
                 }
 
-                if needsSetup {
+                if needsAccessAttention {
                     PermissionSetupCard()
                 }
 
@@ -559,9 +570,9 @@ private struct HomeDashboardView: View {
         }
     }
 
-    private var needsSetup: Bool {
+    private var needsAccessAttention: Bool {
         !model.permissions.screenRecording
-            || !model.permissions.microphone
+            || (settings.includeMicrophone && !model.permissions.microphone)
             || !model.permissions.speechRecognition
     }
 }
@@ -588,7 +599,9 @@ private struct RecorderHeroCard: View {
             }
             Spacer()
             if !model.permissions.screenRecording {
-                Button("Finish Setup") { model.requestScreenRecordingAccess() }
+                Button(settings.onboardingCompleted ? "Restore Access" : "Finish Setup") {
+                    model.requestScreenRecordingAccess()
+                }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
             } else {
@@ -619,12 +632,20 @@ private struct RecorderHeroCard: View {
     }
 
     private var statusTitle: String {
-        if !model.permissions.screenRecording { return "Finish the one-time setup" }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted
+                ? "Screen access needs attention"
+                : "Finish the one-time setup"
+        }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
-        if !model.permissions.screenRecording { return "Allow screen access once so MeetMemento can record Zoom." }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted
+                ? "macOS is not currently allowing MeetMemento to capture Zoom. Restore access once to resume recording."
+                : "Allow screen access once so MeetMemento can record Zoom."
+        }
         return model.zoomState == .inMeeting
             ? "Zoom meeting detected. Recording will start automatically."
             : "MeetMemento is monitoring Zoom in the background."
@@ -665,14 +686,18 @@ private struct PermissionSetupCard: View {
                     .font(.title2)
                     .foregroundStyle(.indigo)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Finish the one-time setup")
+                    Text(settings.onboardingCompleted ? "Recording access needs attention" : "Finish the one-time setup")
                         .font(.headline)
-                    Text("Grant the remaining access in one guided flow. You’ll only see this again if macOS access changes.")
+                    Text(
+                        settings.onboardingCompleted
+                            ? "Your setup is saved, but macOS no longer reports all required access. Restore only the missing permission below."
+                            : "Grant the remaining access in one guided flow. You’ll only see this again if macOS access changes."
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Continue Setup") {
+                Button(settings.onboardingCompleted ? "Restore Access" : "Continue Setup") {
                     Task { await model.completeOnboarding() }
                 }
                 .buttonStyle(.borderedProminent)

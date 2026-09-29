@@ -9,7 +9,7 @@ struct SettingsView: View {
             Section("Recording") {
                 Toggle("Automatically record Zoom meetings", isOn: $settings.autoRecord)
                 Toggle("Include my voice", isOn: $settings.includeMicrophone)
-                Toggle("Launch MeetMemento when I log in", isOn: $settings.launchAtLogin)
+                Toggle("Keep MeetMemento running in the background", isOn: $settings.launchAtLogin)
             }
 
             Section("Permissions") {

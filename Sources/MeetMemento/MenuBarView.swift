@@ -47,7 +47,10 @@ struct MenuBarView: View {
                 Button {
                     model.requestScreenRecordingAccess()
                 } label: {
-                    Label("Finish One-Time Setup", systemImage: "lock.open")
+                    Label(
+                        settings.onboardingCompleted ? "Restore Screen Access" : "Finish One-Time Setup",
+                        systemImage: "lock.open"
+                    )
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -89,13 +92,19 @@ struct MenuBarView: View {
 
     private var statusTitle: String {
         if model.captureState == .recording { return "Recording Zoom" }
-        if !model.permissions.screenRecording { return "One-time setup needed" }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted ? "Screen access needs attention" : "One-time setup needed"
+        }
         return settings.autoRecord ? "Automatic recording is on" : "Automatic recording is off"
     }
 
     private var statusDetail: String {
         if model.captureState == .recording { return "Saving video, audio, and transcript." }
-        if !model.permissions.screenRecording { return "Allow screen access to start recording." }
+        if !model.permissions.screenRecording {
+            return settings.onboardingCompleted
+                ? "Restore macOS screen access to resume recording."
+                : "Allow screen access to start recording."
+        }
         return model.zoomState.label
     }
 }

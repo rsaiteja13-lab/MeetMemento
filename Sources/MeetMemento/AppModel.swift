@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
     private var applicationActivationObserver: NSObjectProtocol?
     private var workspaceActivationObserver: NSObjectProtocol?
     private var permissionRelaunchTask: Task<Void, Never>?
+    private var captureStartupWatchdogTask: Task<Void, Never>?
     private var started = false
     private var waitingForScreenSettings = false
     private var screenSettingsWereOpened = false
@@ -45,6 +46,7 @@ final class AppModel: ObservableObject {
     private var missedMeetingChecks = 0
     private var suppressAutomaticRecordingUntilMeetingEnds = false
     private var activeMeetingTitle: String?
+    private var pendingCaptureFolderURL: URL?
     private var activeRecordingWasTriggeredAutomatically = false
     private var didAuditSavedVideos = false
     private var lastReportedZoomState: ZoomMeetingState?
@@ -373,7 +375,11 @@ final class AppModel: ObservableObject {
 
         if zoomState == .inMeeting {
             missedMeetingChecks = 0
-            if settings.autoRecord,
+            if settings.captureStartupSuppressedUntilZoomEnds,
+               activeCapture == nil {
+                captureState = .failed("Screen capture could not start for this meeting")
+                statusMessage = "MeetMemento recovered from repeated macOS screen-capture stalls. It will automatically try again when the next Zoom meeting starts."
+            } else if settings.autoRecord,
                settings.consentAcknowledged,
                !capturePermissionsReady,
                activeCapture == nil {
@@ -389,6 +395,13 @@ final class AppModel: ObservableObject {
             }
         } else {
             suppressAutomaticRecordingUntilMeetingEnds = false
+            if settings.captureStartupSuppressedUntilZoomEnds {
+                settings.clearCaptureStartupRecoveryState()
+                if captureState == .failed("Screen capture could not start for this meeting") {
+                    captureState = .idle
+                    statusMessage = nil
+                }
+            }
             if captureState == .failed("Screen Recording access needed") {
                 captureState = .idle
                 statusMessage = nil
@@ -419,11 +432,14 @@ final class AppModel: ObservableObject {
         captureState = .starting
         statusMessage = nil
         let startedAt = Date()
+        armCaptureStartupWatchdog(startedAt: startedAt)
+        AppDiagnostics.shared.record("Recording startup entered; automatic=\(triggeredAutomatically)")
         activeMeetingTitle = calendarMatcher.title(forMeetingAt: startedAt)
         var captureFolder: URL?
         do {
             let folder = try library.makeFolder(startedAt: startedAt)
             captureFolder = folder
+            pendingCaptureFolderURL = folder
             var capture = try await captureController.start(
                 in: folder,
                 includeMicrophone: settings.includeMicrophone && permissions.microphone
@@ -434,8 +450,12 @@ final class AppModel: ObservableObject {
                 )
             }
             activeCapture = capture
+            pendingCaptureFolderURL = nil
             activeRecordingWasTriggeredAutomatically = triggeredAutomatically
             settings.screenPermissionConfigured = true
+            settings.clearCaptureStartupRecoveryState()
+            captureStartupWatchdogTask?.cancel()
+            captureStartupWatchdogTask = nil
             selectedMeetingID = nil
             captureState = .recording
             AppDiagnostics.shared.record(
@@ -445,17 +465,72 @@ final class AppModel: ObservableObject {
                 notify(title: "Zoom recording started", body: "Confirm that everyone in the meeting has consented.")
             }
         } catch {
-            if let captureFolder {
+            captureStartupWatchdogTask?.cancel()
+            captureStartupWatchdogTask = nil
+            pendingCaptureFolderURL = nil
+            if let captureFolder, folderContainsRecoverableMedia(captureFolder) {
+                await recoverInterruptedRecordings()
+            } else if let captureFolder {
                 try? FileManager.default.removeItem(at: captureFolder)
             }
             activeMeetingTitle = nil
             activeRecordingWasTriggeredAutomatically = false
+            if triggeredAutomatically {
+                suppressAutomaticRecordingUntilMeetingEnds = true
+            }
             captureState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
             AppDiagnostics.shared.record("Recording startup failed: \(error.localizedDescription)")
             if isScreenPermissionError(error) {
                 settings.screenPermissionConfigured = false
                 permissions.screenRecording = false
+            }
+        }
+    }
+
+    private func armCaptureStartupWatchdog(startedAt: Date) {
+        captureStartupWatchdogTask?.cancel()
+        captureStartupWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(CaptureStartupRecoveryPolicy.timeout))
+            guard !Task.isCancelled, let self else { return }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            guard CaptureStartupRecoveryPolicy.shouldRecover(
+                state: self.captureState,
+                elapsed: elapsed
+            ) else { return }
+            self.recoverFromCaptureStartupStall()
+        }
+    }
+
+    private func recoverFromCaptureStartupStall() {
+        let shouldRetry = settings.registerCaptureStartupRecoveryAttempt()
+        if !shouldRetry {
+            settings.captureStartupSuppressedUntilZoomEnds = true
+        }
+        statusMessage = shouldRetry
+            ? "Screen capture took too long to start. MeetMemento is recovering automatically…"
+            : "macOS screen capture stalled repeatedly. MeetMemento is reopening safely and will retry with the next Zoom meeting."
+        AppDiagnostics.shared.record(
+            "Capture startup watchdog fired after \(Int(CaptureStartupRecoveryPolicy.timeout)) seconds; retry=\(shouldRetry)"
+        )
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = NSApp.isActive
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        ) { _, error in
+            Task { @MainActor in
+                if let error {
+                    self.settings.captureStartupSuppressedUntilZoomEnds = true
+                    self.captureState = .failed("Screen capture recovery failed")
+                    self.statusMessage = "MeetMemento couldn’t reopen automatically: \(error.localizedDescription)"
+                    AppDiagnostics.shared.record("Capture startup recovery relaunch failed: \(error.localizedDescription)")
+                } else {
+                    AppDiagnostics.shared.record("Capture startup recovery relaunched MeetMemento")
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
     }
@@ -824,6 +899,7 @@ final class AppModel: ObservableObject {
         for folder in folders {
             let values = try? folder.resourceValues(forKeys: [.isDirectoryKey])
             guard values?.isDirectory == true,
+                  folder.standardizedFileURL != pendingCaptureFolderURL?.standardizedFileURL,
                   !fileManager.fileExists(atPath: folder.appendingPathComponent("metadata.json").path),
                   let startedAt = formatter.date(from: folder.lastPathComponent) else { continue }
 
@@ -835,8 +911,25 @@ final class AppModel: ObservableObject {
             let videoExists = fileIsNonempty(videoURL)
             let systemAudioExists = fileIsNonempty(systemAudioURL)
             let microphoneExists = fileIsNonempty(microphoneURL)
-            let combinedAudioExists = fileIsNonempty(combinedAudioURL)
+            var combinedAudioExists = fileIsNonempty(combinedAudioURL)
             guard videoExists || systemAudioExists || microphoneExists || combinedAudioExists else { continue }
+
+            var recoveryWarnings: [String] = []
+            if !combinedAudioExists && (systemAudioExists || microphoneExists) {
+                let sources = [
+                    systemAudioExists ? systemAudioURL : nil,
+                    microphoneExists ? microphoneURL : nil
+                ].compactMap { $0 }
+                do {
+                    try await MeetingAudioMixer.makeFullMeetingAudio(
+                        from: sources,
+                        at: combinedAudioURL
+                    )
+                    combinedAudioExists = fileIsNonempty(combinedAudioURL)
+                } catch {
+                    recoveryWarnings.append("Recovered audio could not be combined: \(error.localizedDescription)")
+                }
+            }
 
             let mediaURLs = [systemAudioURL, microphoneURL, combinedAudioURL].filter(fileIsNonempty)
             var durations: [TimeInterval] = []
@@ -862,6 +955,7 @@ final class AppModel: ObservableObject {
             guard mediaDuration > 0.5 || videoValidation.isPlayable else { continue }
 
             var warnings = ["MeetMemento recovered this recording after the app closed unexpectedly."]
+                + recoveryWarnings
             if let videoWarning = videoValidation.warning {
                 warnings.append(videoWarning)
             }
@@ -901,6 +995,18 @@ final class AppModel: ObservableObject {
                 ? "An interrupted recording was recovered. Its available audio is ready, and you can retry transcription."
                 : "\(recoveredMeetings.count) interrupted recordings were recovered."
         }
+        for meeting in recoveredMeetings where meeting.transcriptionStatus == .pending {
+            queueTranscription(for: meeting, notifyWhenComplete: true)
+        }
+    }
+
+    private func folderContainsRecoverableMedia(_ folder: URL) -> Bool {
+        [
+            "zoom-screen.mp4",
+            "meeting-audio.m4a",
+            "my-microphone.caf",
+            "full-meeting-audio.m4a"
+        ].contains { fileIsNonempty(folder.appendingPathComponent($0)) }
     }
 
     private func fileIsNonempty(_ url: URL) -> Bool {

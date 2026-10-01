@@ -1,6 +1,6 @@
 {
   "name": "meetmemento-windows",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "MeetMemento for Windows records Zoom video, loopback audio, microphone audio, and local transcripts.",
   "main": "src/main.js",
   "author": "MeetMemento",

@@ -10,7 +10,7 @@ const elements = Object.fromEntries([
   'audioUnavailable', 'openMeetingFolder', 'transcriptBadge', 'transcriptContent', 'setupAutoRecord',
   'setupMicrophone', 'setupLogin', 'setupConsent', 'setupProgress', 'finishSetup', 'settingsDialog',
   'autoRecordSetting', 'microphoneSetting', 'loginSetting', 'openRecordingsFolder', 'checkSpeech',
-  'speechStatus', 'captureCanvas', 'captureSourceVideo'
+  'speechStatus', 'captureCanvas', 'captureSourceVideo', 'homeButton'
 ].map((id) => [id, document.getElementById(id)]));
 
 const viewState = {
@@ -146,6 +146,12 @@ async function selectMeeting(id) {
   await renderMeetingDetail();
 }
 
+async function showHome() {
+  viewState.selectedId = null;
+  renderMeetingList();
+  await renderMeetingDetail();
+}
+
 async function renderMeetingDetail() {
   const token = ++viewState.renderingMeeting;
   const meeting = selectedMeeting();
@@ -251,18 +257,27 @@ class CaptureController {
     this.currentSource = null;
     this.sourceReplaceQueue = Promise.resolve();
     this.deviceChangeTimer = null;
+    this.captureAttempt = 0;
+    this.healthTimer = null;
+    this.lastVideoChunkAt = 0;
+    this.lastAudioChunkAt = 0;
+    this.failing = false;
     this.deviceListener = () => {
       if (this.deviceChangeTimer) clearTimeout(this.deviceChangeTimer);
       this.deviceChangeTimer = setTimeout(() => this.reconnectAudioDevices(), 800);
     };
   }
 
-  async acquireDisplay(source) {
+  async acquireDisplay(source, attempt = this.captureAttempt) {
     await api.prepareCapture(source.id);
-    return navigator.mediaDevices.getDisplayMedia({
+    const request = navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 10, max: 15 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: true
     });
+    request.then((stream) => {
+      if (attempt !== this.captureAttempt) stream.getTracks().forEach((track) => track.stop());
+    }).catch(() => { /* the awaited request reports the failure */ });
+    return withTimeout(request, 15000, 'Windows did not start screen capture in time.');
   }
 
   async attachDisplay(stream) {
@@ -415,6 +430,8 @@ class CaptureController {
     const recorder = new MediaRecorder(stream, options);
     recorder.addEventListener('dataavailable', (event) => {
       if (!event.data || event.data.size === 0 || !this.sessionId) return;
+      if (kind === 'video') this.lastVideoChunkAt = Date.now();
+      if (kind === 'audio') this.lastAudioChunkAt = Date.now();
       this.appendQueue = this.appendQueue.then(async () => {
         const data = await event.data.arrayBuffer();
         await api.appendChunk(this.sessionId, kind, data);
@@ -430,6 +447,8 @@ class CaptureController {
   async start(payload) {
     if (this.active || this.stopping) return;
     this.active = true;
+    this.failing = false;
+    const attempt = ++this.captureAttempt;
     this.warnings = [];
     this.audioPeak = 0;
     this.systemAudioPeak = 0;
@@ -438,8 +457,14 @@ class CaptureController {
     this.currentSource = payload.source;
     try {
       this.configureAudio();
-      this.displayStream = await this.acquireDisplay(payload.source);
+      const displayStream = await this.acquireDisplay(payload.source, attempt);
+      if (attempt !== this.captureAttempt || !this.active) {
+        displayStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this.displayStream = displayStream;
       await this.attachDisplay(this.displayStream);
+      if (attempt !== this.captureAttempt || !this.active) return;
       this.configureCanvas();
       await this.openMicrophone(true);
       if (this.audioContext.state === 'suspended') await this.audioContext.resume();
@@ -447,7 +472,8 @@ class CaptureController {
       const session = await api.createRecording({
         title: payload.title,
         sourceName: payload.source.name,
-        startedAt: this.startedAt.toISOString()
+        startedAt: this.startedAt.toISOString(),
+        automatic: payload.automatic
       });
       this.sessionId = session.id;
 
@@ -465,12 +491,54 @@ class CaptureController {
         ...(audioMime ? { mimeType: audioMime } : {}),
         audioBitsPerSecond: 128000
       });
+      this.lastVideoChunkAt = Date.now();
+      this.lastAudioChunkAt = Date.now();
+      this.healthTimer = setInterval(() => this.checkCaptureHealth(), 5000);
       navigator.mediaDevices.addEventListener('devicechange', this.deviceListener);
     } catch (error) {
+      if (attempt !== this.captureAttempt) return;
       await this.cleanup();
       this.active = false;
-      api.captureFailed(`Recording could not start: ${error.message}`);
+      api.captureFailed(`Recording could not start: ${error.message}`, true);
     }
+  }
+
+  checkCaptureHealth() {
+    if (!this.active || this.stopping || this.failing || !this.sessionId) return;
+    const now = Date.now();
+    const videoStalled = this.videoRecorder?.state === 'inactive' || now - this.lastVideoChunkAt > 20000;
+    const audioStalled = this.audioRecorder?.state === 'inactive' || now - this.lastAudioChunkAt > 20000;
+    if (!videoStalled && !audioStalled) return;
+    const missing = videoStalled && audioStalled ? 'video and audio' : videoStalled ? 'video' : 'audio';
+    void this.failAndRecover(`The ${missing} recorder stopped responding.`, true);
+  }
+
+  async failAndRecover(message, retry) {
+    if (this.failing) return;
+    this.failing = true;
+    this.stopping = true;
+    try {
+      await Promise.all([this.stopRecorder(this.videoRecorder), this.stopRecorder(this.audioRecorder)]);
+      this.flushPcm();
+      await withTimeout(this.appendQueue, 8000, 'Pending recording data did not finish writing.');
+    } catch (error) {
+      this.warnings.push(error.message);
+    }
+    try { await this.cleanup(); } catch { /* the main process preserves streamed files */ }
+    this.sessionId = null;
+    this.active = false;
+    this.stopping = false;
+    api.captureFailed(message, retry);
+  }
+
+  async cancel() {
+    this.captureAttempt += 1;
+    this.active = false;
+    this.stopping = true;
+    try { await this.cleanup(); } catch { /* cancellation is best effort */ }
+    this.sessionId = null;
+    this.stopping = false;
+    this.failing = false;
   }
 
   replaceSource(payload, rememberSource = true) {
@@ -483,7 +551,7 @@ class CaptureController {
     let nextStream;
     const previous = this.displayStream;
     try {
-      nextStream = await this.acquireDisplay(payload);
+      nextStream = await this.acquireDisplay(payload, this.captureAttempt);
       await this.attachDisplay(nextStream);
       this.displayStream = nextStream;
       if (rememberSource) this.currentSource = payload;
@@ -502,8 +570,13 @@ class CaptureController {
   stopRecorder(recorder) {
     if (!recorder || recorder.state === 'inactive') return Promise.resolve();
     return new Promise((resolve) => {
-      recorder.addEventListener('stop', resolve, { once: true });
-      recorder.stop();
+      const timeout = setTimeout(resolve, 5000);
+      recorder.addEventListener('stop', () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      try { recorder.stop(); }
+      catch { clearTimeout(timeout); resolve(); }
     });
   }
 
@@ -531,7 +604,7 @@ class CaptureController {
       await refreshLibrary();
     } catch (error) {
       try { await this.cleanup(); } catch { /* preserve the original finalization error */ }
-      api.captureFailed(`Recording could not be finalized safely: ${error.message}`);
+      api.captureFailed(`Recording could not be finalized safely: ${error.message}`, false);
     } finally {
       this.sessionId = null;
       this.active = false;
@@ -545,6 +618,8 @@ class CaptureController {
     this.deviceChangeTimer = null;
     if (this.drawTimer) clearInterval(this.drawTimer);
     this.drawTimer = null;
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
     this.processor && (this.processor.onaudioprocess = null);
     try { this.systemAudioSource?.disconnect(); } catch { /* no-op */ }
     try { this.systemAnalyser?.disconnect(); } catch { /* no-op */ }
@@ -565,6 +640,14 @@ class CaptureController {
     this.audioContext = null;
     this.currentSource = null;
   }
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function downsampleToPcm16(input, sourceRate, targetRate) {
@@ -646,6 +729,7 @@ elements.captureButton.addEventListener('click', () => {
   if (viewState.app.captureState === 'recording') api.stopRecording();
   else api.startManualRecording().catch(showError);
 });
+elements.homeButton.addEventListener('click', () => showHome().catch(showError));
 elements.emptyRecordButton.addEventListener('click', () => api.startManualRecording().catch(showError));
 elements.openRecycleBin.addEventListener('click', () => api.openRecycleBin());
 elements.openSettings.addEventListener('click', () => elements.settingsDialog.showModal());
@@ -693,8 +777,11 @@ for (const element of [elements.videoPlayer, elements.videoUnavailable]) {
 }
 
 if (api) {
+  api.rendererHeartbeat();
+  setInterval(() => api.rendererHeartbeat(), 5000);
   api.onCaptureStart((payload) => capture.start(payload));
   api.onCaptureStop((payload) => capture.stop(payload));
+  api.onCaptureCancel(() => capture.cancel());
   api.onCaptureSourceChanged((payload) => capture.replaceSource(payload));
   api.onStateChanged((state) => {
     viewState.app = state;

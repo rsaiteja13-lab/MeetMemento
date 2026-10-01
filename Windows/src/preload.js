@@ -18,7 +18,8 @@ contextBridge.exposeInMainWorld('meetMemento', {
   appendChunk: (sessionId, kind, data) => ipcRenderer.invoke('recording:append', { sessionId, kind, data }),
   appendPcm: (sessionId, data) => ipcRenderer.invoke('recording:pcm', { sessionId, data }),
   finishRecording: (sessionId, details) => ipcRenderer.invoke('recording:finish', { sessionId, details }),
-  captureFailed: (message) => ipcRenderer.send('capture:failed', message),
+  captureFailed: (message, retry = false) => ipcRenderer.send('capture:failed', { message, retry }),
+  rendererHeartbeat: () => ipcRenderer.send('renderer:heartbeat'),
   startManualRecording: () => ipcRenderer.invoke('capture:start-manual'),
   stopRecording: () => ipcRenderer.invoke('capture:stop'),
   listMeetings: () => ipcRenderer.invoke('meetings:list'),
@@ -32,6 +33,7 @@ contextBridge.exposeInMainWorld('meetMemento', {
   openSpeechSettings: () => ipcRenderer.invoke('app:open-speech-settings'),
   onCaptureStart: (callback) => on('capture:start', callback),
   onCaptureStop: (callback) => on('capture:stop', callback),
+  onCaptureCancel: (callback) => on('capture:cancel', callback),
   onCaptureSourceChanged: (callback) => on('capture:source-changed', callback),
   onStateChanged: (callback) => on('app:state-changed', callback),
   onLibraryChanged: (callback) => on('library:changed', callback)

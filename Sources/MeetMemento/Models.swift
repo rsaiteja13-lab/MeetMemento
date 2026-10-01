@@ -20,6 +20,14 @@ enum CaptureState: Equatable {
     }
 }
 
+enum CaptureStartupRecoveryPolicy {
+    static let timeout: TimeInterval = 20
+
+    static func shouldRecover(state: CaptureState, elapsed: TimeInterval) -> Bool {
+        state == .starting && elapsed >= timeout
+    }
+}
+
 enum ZoomMeetingState: Equatable {
     case notRunning
     case open

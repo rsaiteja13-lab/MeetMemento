@@ -16,7 +16,11 @@ const EXCLUDED_PATTERNS = [
   /zoom scheduler/i,
   /zoom clips/i,
   /zoom whiteboard/i,
-  /sign in.*zoom/i
+  /sign in.*zoom/i,
+  /(?:meeting|webinar) (?:has )?ended/i,
+  /you (?:have )?left (?:the )?(?:meeting|webinar)/i,
+  /post[- ]meeting/i,
+  /meeting feedback/i
 ];
 
 function scoreSource(source, zoomProcessRunning = true) {

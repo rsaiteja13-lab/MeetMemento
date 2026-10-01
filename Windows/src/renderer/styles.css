@@ -41,7 +41,8 @@ button:focus-visible, input:focus-visible, .meeting-row:focus-visible {
   border-right: 1px solid var(--line);
 }
 
-.brand-row { display: flex; align-items: center; gap: 12px; padding: 0 8px 21px; }
+.brand-row { display: flex; align-items: center; width: 100%; gap: 12px; padding: 0 8px 21px; border: 0; color: inherit; background: transparent; text-align: left; }
+.brand-row:hover .brand-name { color: var(--blue); }
 
 .brand-mark, .setup-logo {
   position: relative;

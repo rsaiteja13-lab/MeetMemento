@@ -24,6 +24,8 @@ test('keeps a currently captured Zoom source when it remains available', () => {
 test('does not treat unrelated windows as meetings', () => {
   assert.equal(scoreSource({ name: 'Project notes' }, true), -1);
   assert.equal(chooseZoomSource([{ id: 'home', name: 'Zoom Workplace' }], true), null);
+  assert.equal(chooseZoomSource([{ id: 'ended', name: 'Zoom Webinar has ended' }], true), null);
+  assert.equal(chooseZoomSource([{ id: 'feedback', name: 'Post-meeting feedback - Zoom' }], true), null);
 });
 
 test('uses descriptive Zoom window text as the meeting name', () => {

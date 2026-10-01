@@ -59,8 +59,16 @@ class RecordingWriter {
     const videoPath = path.join(folderPath, 'zoom-screen.webm');
     const audioPath = path.join(folderPath, 'meeting-audio.webm');
     const wavPath = path.join(folderPath, 'transcription-input.wav');
+    const id = crypto.randomUUID();
+    writeJsonAtomic(path.join(folderPath, 'recording-session.json'), {
+      id,
+      title,
+      sourceName,
+      startedAt: startedAt.toISOString(),
+      folderName
+    });
     const session = {
-      id: crypto.randomUUID(),
+      id,
       title,
       sourceName,
       startedAt,
@@ -113,20 +121,22 @@ class RecordingWriter {
     const session = this.#require(sessionId);
     const finishedAt = endedAt instanceof Date ? endedAt : new Date(endedAt);
     if (Number.isNaN(finishedAt.getTime())) throw new Error('The recording end time is invalid.');
+    const finalizationFailures = [];
     try {
       fs.writeSync(session.wavHandle, wavHeader(session.pcmBytes), 0, WAV_HEADER_BYTES, 0);
-      for (const handle of [session.videoHandle, session.audioHandle, session.wavHandle]) {
-        fs.fsyncSync(handle);
-        fs.closeSync(handle);
-      }
-    } finally {
-      this.active = null;
+    } catch (error) {
+      finalizationFailures.push(`Transcript audio header: ${error.message}`);
     }
+    for (const handle of [session.videoHandle, session.audioHandle, session.wavHandle]) {
+      try { fs.fsyncSync(handle); } catch (error) { finalizationFailures.push(`File flush: ${error.message}`); }
+      try { fs.closeSync(handle); } catch (error) { finalizationFailures.push(`File close: ${error.message}`); }
+    }
+    this.active = null;
 
     const videoValid = safeSize(session.videoPath) > 1024;
     const audioValid = safeSize(session.audioPath) > 256;
     const speechInputValid = safeSize(session.wavPath) > WAV_HEADER_BYTES + 3200;
-    const failures = [...warnings];
+    const failures = [...warnings, ...finalizationFailures];
     if (!videoValid) failures.push('Video was not captured.');
     if (!audioValid) failures.push('Meeting audio was not captured.');
 
@@ -145,6 +155,7 @@ class RecordingWriter {
       errorMessage: [errorMessage, ...failures].filter(Boolean).join(' ') || null
     };
     writeJsonAtomic(path.join(session.folderPath, 'metadata.json'), metadata);
+    fs.rmSync(path.join(session.folderPath, 'recording-session.json'), { force: true });
     return { ...metadata, folderPath: session.folderPath, wavPath: session.wavPath };
   }
 

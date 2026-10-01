@@ -38,7 +38,7 @@ The build script creates a universal app for both Apple silicon and Intel Macs. 
 
 ## What the macOS app does
 
-- Detects active Zoom meetings and webinars—including current Zoom meeting-helper processes—and begins recording automatically after onboarding.
+- Detects active Zoom meetings and webinars from real meeting windows, using newly launched Zoom meeting helpers only during the short window-startup grace period so stale helpers do not create false recordings.
 - Records Zoom's windows with an isolated H.264 writer, a monotonic meeting timeline, periodic still-frame keepalives, and automatic ScreenCaptureKit recovery so static or long meetings keep their full duration.
 - Captures system audio through a stream independent of Zoom's helper processes, before macOS sends it to speakers, AirPods, Bluetooth headsets, docks, or another output.
 - Captures the current default microphone as a second track, converts every input to one stable recording format, and reconnects when the input device changes.
@@ -48,7 +48,7 @@ The build script creates a universal app for both Apple silicon and Intel Macs. 
 - Groups recordings by month and day, supports one-click deletion, and links to macOS Trash for recovery.
 - Uses a matching macOS Calendar event—including Outlook calendars connected to Calendar—as the meeting title when available, with transcript-based naming as a fallback.
 - Stores `zoom-screen.mp4`, `meeting-audio.m4a`, `my-microphone.caf`, `full-meeting-audio.m4a`, `transcript.txt`, and `metadata.json` together under `~/Library/Application Support/MeetMemento/Recordings` as applicable.
-- Lives in the menu bar, launches silently at login, and uses a macOS-managed background guardian to restore the recorder if the visible app is quit. Turning off automatic recording remains the intentional way to pause capture. Its Dock icon appears while a MeetMemento window is open and hides again when all windows close.
+- Lives in the menu bar, launches silently at login, and uses a macOS-managed background guardian to restore the recorder if the visible app is quit. Capture startup also has an in-app watchdog plus an independent guardian fallback, and interrupted microphone audio is recovered instead of discarded. Turning off automatic recording remains the intentional way to pause capture. Its Dock icon appears while a MeetMemento window is open and hides again when all windows close.
 - Keeps a small rotating local diagnostics log so a missed detection or capture failure can be identified without touching meeting content.
 - Supports Apple silicon and Intel Macs running macOS 13 or later.
 
@@ -80,4 +80,4 @@ Audio and transcripts stay on the Mac. Speech recognition is requested from macO
 
 ## Current scope
 
-This is an MVP. It checks current Zoom meeting windows every second and recognizes Zoom's meeting-only `CptHost` and `zCCIMeetingHost` helpers as fallbacks. Zoom's `caphost` process is included in capture but is not used alone as a meeting signal because it remains open outside calls. A manual recording control is available if a future Zoom release changes those signals. Teams and other meeting apps, full-screen capture beyond the meeting app, action items, speaker diarization, cloud sync, and automatic deletion policies are future capabilities.
+This is an MVP. It checks current Zoom meeting windows every second and uses recently launched `CptHost` and `zCCIMeetingHost` processes only as a brief window-startup fallback. Long-lived helpers such as `caphost`, or helpers left behind after a call, are not sufficient by themselves to trigger recording. A manual recording control is available if a future Zoom release changes those signals. Teams and other meeting apps, full-screen capture beyond the meeting app, action items, speaker diarization, cloud sync, and automatic deletion policies are future capabilities.

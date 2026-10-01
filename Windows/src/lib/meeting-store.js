@@ -1,8 +1,10 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { WAV_HEADER_BYTES, wavHeader } = require('./recording-writer');
 const { writeJsonAtomic } = require('./settings-store');
 
 function readMetadata(folderPath) {
@@ -20,6 +22,31 @@ function safeName(value) {
     .slice(0, 100) || 'Meeting';
 }
 
+function safeStat(filePath) {
+  try { return fs.statSync(filePath); } catch { return null; }
+}
+
+function startedAtFromFolder(folderName) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/.exec(folderName);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  const date = new Date(year, month - 1, day, hour, minute, second);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function repairWavHeader(wavPath) {
+  const size = safeStat(wavPath)?.size || 0;
+  if (size <= WAV_HEADER_BYTES) return false;
+  const handle = fs.openSync(wavPath, 'r+');
+  try {
+    fs.writeSync(handle, wavHeader(size - WAV_HEADER_BYTES), 0, WAV_HEADER_BYTES, 0);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+  return true;
+}
+
 class MeetingStore {
   constructor(recordingsRoot) {
     this.recordingsRoot = recordingsRoot;
@@ -35,6 +62,63 @@ class MeetingStore {
       })
       .filter(Boolean)
       .sort((left, right) => new Date(right.startedAt) - new Date(left.startedAt));
+  }
+
+  recoverInterruptedRecordings() {
+    const recovered = [];
+    const entries = fs.readdirSync(this.recordingsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const folderPath = path.join(this.recordingsRoot, entry.name);
+      const metadataPath = path.join(folderPath, 'metadata.json');
+      if (fs.existsSync(metadataPath)) continue;
+
+      const session = readMetadataFile(path.join(folderPath, 'recording-session.json')) || {};
+      const videoPath = path.join(folderPath, 'zoom-screen.webm');
+      const audioPath = path.join(folderPath, 'meeting-audio.webm');
+      const wavPath = path.join(folderPath, 'transcription-input.wav');
+      const videoStat = safeStat(videoPath);
+      const audioStat = safeStat(audioPath);
+      const wavStat = safeStat(wavPath);
+      const videoValid = (videoStat?.size || 0) > 1024;
+      const audioValid = (audioStat?.size || 0) > 256;
+      const speechInputValid = (wavStat?.size || 0) > WAV_HEADER_BYTES + 3200;
+      if (!videoValid && !audioValid && !speechInputValid) continue;
+
+      const folderStartedAt = startedAtFromFolder(entry.name);
+      let startedAt = new Date(session.startedAt || folderStartedAt || Date.now());
+      if (Number.isNaN(startedAt.getTime())) startedAt = folderStartedAt || new Date();
+      const latestModifiedAt = [videoStat, audioStat, wavStat]
+        .filter(Boolean)
+        .map((stat) => stat.mtime)
+        .sort((left, right) => right - left)[0] || startedAt;
+      const warnings = ['MeetMemento recovered this recording after Windows or the app closed unexpectedly.'];
+      if (!videoValid) warnings.push('Video was not finalized, but the available audio was preserved.');
+      if (!audioValid) warnings.push('Meeting audio was not finalized.');
+      if (speechInputValid) {
+        try { repairWavHeader(wavPath); }
+        catch (error) { warnings.push(`Transcript audio recovery: ${error.message}`); }
+      }
+
+      const metadata = {
+        id: session.id || crypto.randomUUID(),
+        title: session.title || 'Recovered Zoom meeting',
+        sourceName: session.sourceName || 'Zoom meeting',
+        startedAt: startedAt.toISOString(),
+        endedAt: latestModifiedAt.toISOString(),
+        durationSeconds: Math.max(0, (latestModifiedAt.getTime() - startedAt.getTime()) / 1000),
+        folderName: entry.name,
+        videoFile: videoValid ? path.basename(videoPath) : null,
+        audioFile: audioValid ? path.basename(audioPath) : null,
+        transcriptFile: null,
+        transcriptionStatus: speechInputValid ? 'processing' : 'failed',
+        errorMessage: warnings.join(' ')
+      };
+      writeJsonAtomic(metadataPath, metadata);
+      fs.rmSync(path.join(folderPath, 'recording-session.json'), { force: true });
+      recovered.push({ ...metadata, folderPath, wavPath });
+    }
+    return recovered;
   }
 
   find(id) {
@@ -84,4 +168,15 @@ class MeetingStore {
   }
 }
 
-module.exports = { MeetingStore, readMetadata, safeName };
+function readMetadataFile(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
+  catch { return null; }
+}
+
+module.exports = {
+  MeetingStore,
+  readMetadata,
+  repairWavHeader,
+  safeName,
+  startedAtFromFolder
+};

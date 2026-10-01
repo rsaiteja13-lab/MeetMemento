@@ -4,6 +4,14 @@ const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, Notification
 const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  CAPTURE_FINALIZATION_TIMEOUT_MS,
+  CAPTURE_STARTUP_TIMEOUT_MS,
+  RENDERER_HEARTBEAT_TIMEOUT_MS,
+  hasTimedOut,
+  isHeartbeatStale,
+  registerRecoveryAttempt
+} = require('./lib/capture-recovery');
 const { chooseZoomSource, cleanMeetingTitle } = require('./lib/zoom-detector');
 const { MeetingStore } = require('./lib/meeting-store');
 const { RecordingWriter } = require('./lib/recording-writer');
@@ -22,12 +30,22 @@ let transcriptService;
 let pendingCaptureSourceId = null;
 let selectedSource = null;
 let detectorTimer = null;
+let rendererHealthTimer = null;
+let captureStartupTimer = null;
+let captureFinalizationTimer = null;
 let detectorBusy = false;
 let missedMeetingChecks = 0;
 let suppressedSourceId = null;
 let appState = { captureState: 'ready', zoomState: 'not-running', statusMessage: null, activeSource: null };
 let quitting = false;
+let quitAfterSave = false;
 let rendererReady = false;
+let rendererLastHeartbeatAt = 0;
+let rendererRecoveryInProgress = false;
+let rendererRecoveryAttempts = [];
+let captureRecoveryAttempts = [];
+let captureStartupStartedAt = 0;
+let transcriptionQueue = Promise.resolve();
 
 function resourcesPath(fileName) {
   return app.isPackaged
@@ -44,7 +62,10 @@ function settingsPath() {
 }
 
 function send(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.isLoading() === false) {
+  if (mainWindow
+      && !mainWindow.isDestroyed()
+      && !mainWindow.webContents.isDestroyed()
+      && mainWindow.webContents.isLoading() === false) {
     mainWindow.webContents.send(channel, payload);
   }
 }
@@ -86,7 +107,7 @@ function rebuildTray() {
       : { label: 'Record Zoom now', click: () => startFromDetection(false) },
     { label: 'Open recordings folder', click: () => shell.openPath(recordingsRoot()) },
     { type: 'separator' },
-    { label: 'Quit MeetMemento', click: () => app.quit() }
+    { label: 'Hide MeetMemento', click: () => mainWindow?.hide() }
   ]));
 }
 
@@ -121,14 +142,16 @@ function createWindow() {
       mainWindow.hide();
     }
   });
-  mainWindow.webContents.on('render-process-gone', () => {
-    rendererReady = false;
-    const recovered = recordingWriter.abort('The app interface restarted while recording.');
-    if (recovered) publishState({ captureState: 'ready', statusMessage: recovered.errorMessage, activeSource: null });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    recoverRenderer(`The app interface stopped unexpectedly (${details.reason || 'unknown reason'}).`);
   });
+  mainWindow.on('unresponsive', () => recoverRenderer('The app interface stopped responding.'));
   mainWindow.webContents.on('did-finish-load', () => {
     rendererReady = true;
+    rendererLastHeartbeatAt = Date.now();
+    rendererRecoveryInProgress = false;
     send('app:state-changed', appState);
+    void pollMeeting();
   });
 }
 
@@ -184,12 +207,149 @@ async function pollMeeting() {
   }
 }
 
+function clearCaptureStartupWatchdog() {
+  if (captureStartupTimer) clearTimeout(captureStartupTimer);
+  captureStartupTimer = null;
+  captureStartupStartedAt = 0;
+}
+
+function clearCaptureFinalizationWatchdog() {
+  if (captureFinalizationTimer) clearTimeout(captureFinalizationTimer);
+  captureFinalizationTimer = null;
+}
+
+function queueTranscription(meeting) {
+  if (!meeting || meeting.transcriptionStatus !== 'processing') return;
+  const folderPath = meeting.folderPath || meetingStore.folder(meeting);
+  const wavPath = meeting.wavPath || path.join(folderPath, 'transcription-input.wav');
+  transcriptionQueue = transcriptionQueue.then(async () => {
+    try {
+      const result = await transcriptService.transcribe(
+        wavPath,
+        folderPath,
+        settingsStore.get().speechLanguage
+      );
+      meetingStore.update(meeting.id, {
+        transcriptFile: result.status === 'complete' ? 'transcript.txt' : null,
+        transcript: result.status === 'complete' ? result.transcript : null,
+        transcriptionStatus: result.status,
+        errorMessage: result.error || meeting.errorMessage
+      });
+    } catch (error) {
+      meetingStore.update(meeting.id, {
+        transcriptionStatus: 'failed',
+        errorMessage: [meeting.errorMessage, `Transcript unavailable: ${error.message}`].filter(Boolean).join(' ')
+      });
+    } finally {
+      send('library:changed');
+    }
+  }).catch(() => { /* keep later transcript jobs running */ });
+}
+
+function abortActiveRecording(message) {
+  const recovered = recordingWriter.abort(message);
+  if (!recovered) return null;
+  send('library:changed');
+  queueTranscription(recovered);
+  return recovered;
+}
+
+function finishQuitIfRequested() {
+  if (!quitAfterSave) return;
+  quitAfterSave = false;
+  quitting = true;
+  setImmediate(() => app.quit());
+}
+
+function recoverRenderer(reason) {
+  if (rendererRecoveryInProgress || !mainWindow || mainWindow.isDestroyed()) return;
+  const now = Date.now();
+  const recovery = registerRecoveryAttempt(rendererRecoveryAttempts, now);
+  rendererRecoveryAttempts = recovery.attempts;
+  rendererRecoveryInProgress = true;
+  rendererReady = false;
+  clearCaptureStartupWatchdog();
+  clearCaptureFinalizationWatchdog();
+  const recovered = abortActiveRecording(reason);
+  selectedSource = null;
+  pendingCaptureSourceId = null;
+  publishState({
+    captureState: recovery.allowed ? 'ready' : 'failed',
+    activeSource: null,
+    statusMessage: recovered
+      ? 'The recording interface restarted. The available video and audio were preserved.'
+      : recovery.allowed
+        ? 'MeetMemento recovered its recording interface automatically.'
+        : 'The recording interface stopped repeatedly. Reopen MeetMemento to try again.'
+  });
+  if (!recovery.allowed || mainWindow.webContents.isDestroyed()) {
+    rendererRecoveryInProgress = false;
+    showWindow();
+    return;
+  }
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+    mainWindow.webContents.reload();
+  }, 500);
+}
+
+function armCaptureStartupWatchdog(source) {
+  clearCaptureStartupWatchdog();
+  captureStartupStartedAt = Date.now();
+  captureStartupTimer = setTimeout(() => {
+    if (!hasTimedOut('starting', captureStartupStartedAt, Date.now(), CAPTURE_STARTUP_TIMEOUT_MS)
+        || appState.captureState !== 'starting') return;
+    const recovery = registerRecoveryAttempt(captureRecoveryAttempts, Date.now());
+    captureRecoveryAttempts = recovery.attempts;
+    const stalledSourceId = source?.id || selectedSource?.id || null;
+    send('capture:cancel', { reason: 'Windows capture startup timed out.' });
+    pendingCaptureSourceId = null;
+    selectedSource = null;
+    clearCaptureStartupWatchdog();
+    if (recovery.allowed) {
+      publishState({
+        captureState: 'ready',
+        activeSource: null,
+        statusMessage: 'Capture startup took too long. MeetMemento is retrying automatically…'
+      });
+      setTimeout(() => void pollMeeting(), 750);
+    } else {
+      suppressedSourceId = stalledSourceId;
+      publishState({
+        captureState: 'failed',
+        activeSource: null,
+        statusMessage: 'Windows capture did not start after automatic recovery. MeetMemento will try again with the next Zoom meeting.'
+      });
+      showWindow();
+    }
+  }, CAPTURE_STARTUP_TIMEOUT_MS + 50);
+}
+
+function armCaptureFinalizationWatchdog() {
+  clearCaptureFinalizationWatchdog();
+  captureFinalizationTimer = setTimeout(() => {
+    if (appState.captureState !== 'stopping') return;
+    send('capture:cancel', { reason: 'Recording finalization timed out.' });
+    const recovered = abortActiveRecording('MeetMemento recovered this recording after finalization took too long.');
+    selectedSource = null;
+    publishState({
+      captureState: 'ready',
+      activeSource: null,
+      statusMessage: recovered
+        ? 'Recording finalization took too long, but the available video and audio were preserved.'
+        : 'Recording stopped.'
+    });
+    clearCaptureFinalizationWatchdog();
+    finishQuitIfRequested();
+  }, CAPTURE_FINALIZATION_TIMEOUT_MS);
+}
+
 async function startCapture(source, automatic) {
   if (!source || !rendererReady || !['ready', 'failed'].includes(appState.captureState)) return false;
   selectedSource = source;
   missedMeetingChecks = 0;
   publishState({ captureState: 'starting', activeSource: source.name, statusMessage: null });
-  showNotification('MeetMemento is recording', `${source.name || 'Zoom meeting'} is being recorded locally.`);
+  armCaptureStartupWatchdog(source);
   send('capture:start', {
     source: { id: source.id, name: source.name },
     title: cleanMeetingTitle(source.name),
@@ -214,40 +374,22 @@ async function requestStop(reason = null, suppressUntilMeetingEnds = false) {
   if (!['recording', 'starting'].includes(appState.captureState)) return false;
   if (suppressUntilMeetingEnds) suppressedSourceId = selectedSource?.id || null;
   publishState({ captureState: 'stopping', statusMessage: reason });
+  clearCaptureStartupWatchdog();
+  armCaptureFinalizationWatchdog();
   send('capture:stop', { reason });
   return true;
 }
 
 async function finishAndTranscribe(sessionId, details) {
+  clearCaptureStartupWatchdog();
+  clearCaptureFinalizationWatchdog();
   const meeting = recordingWriter.finish(sessionId, details);
   selectedSource = null;
   publishState({ captureState: 'ready', activeSource: null, statusMessage: 'Recording saved. Creating the transcript locally…' });
   send('library:changed');
 
-  if (meeting.transcriptionStatus === 'processing') {
-    void (async () => {
-      try {
-        const result = await transcriptService.transcribe(
-          meeting.wavPath,
-          meeting.folderPath,
-          settingsStore.get().speechLanguage
-        );
-        meetingStore.update(meeting.id, {
-          transcriptFile: result.status === 'complete' ? 'transcript.txt' : null,
-          transcript: result.status === 'complete' ? result.transcript : null,
-          transcriptionStatus: result.status,
-          errorMessage: result.error || meeting.errorMessage
-        });
-      } catch (error) {
-        meetingStore.update(meeting.id, {
-          transcriptionStatus: 'failed',
-          errorMessage: [meeting.errorMessage, `Transcript unavailable: ${error.message}`].filter(Boolean).join(' ')
-        });
-      } finally {
-        send('library:changed');
-      }
-    })();
-  }
+  queueTranscription(meeting);
+  finishQuitIfRequested();
   return meeting;
 }
 
@@ -274,6 +416,9 @@ function registerIpc() {
     return settings;
   });
   ipcMain.handle('speech:probe', () => transcriptService.probe());
+  ipcMain.on('renderer:heartbeat', () => {
+    rendererLastHeartbeatAt = Date.now();
+  });
   ipcMain.handle('capture:prepare', async (_event, sourceId) => {
     pendingCaptureSourceId = sourceId;
     return true;
@@ -286,7 +431,12 @@ function registerIpc() {
       sourceName: details.sourceName,
       startedAt: new Date(details.startedAt || Date.now())
     });
+    clearCaptureStartupWatchdog();
     publishState({ captureState: 'recording', statusMessage: null });
+    showNotification(
+      'MeetMemento is recording',
+      `${details.sourceName || 'Zoom meeting'} is being recorded locally.`
+    );
     return sessionInfo;
   });
   ipcMain.handle('recording:append', (_event, { sessionId, kind, data }) => {
@@ -298,12 +448,28 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('recording:finish', (_event, { sessionId, details }) => finishAndTranscribe(sessionId, details));
-  ipcMain.on('capture:failed', (_event, message) => {
-    recordingWriter.abort(message);
-    suppressedSourceId = selectedSource?.id || null;
+  ipcMain.on('capture:failed', (_event, payload) => {
+    const detail = typeof payload === 'string' ? { message: payload, retry: false } : payload || {};
+    const message = detail.message || 'Recording stopped unexpectedly.';
+    clearCaptureStartupWatchdog();
+    clearCaptureFinalizationWatchdog();
+    abortActiveRecording(message);
+    const failedSourceId = selectedSource?.id || null;
+    const recovery = detail.retry
+      ? registerRecoveryAttempt(captureRecoveryAttempts, Date.now())
+      : { allowed: false, attempts: captureRecoveryAttempts };
+    captureRecoveryAttempts = recovery.attempts;
+    suppressedSourceId = recovery.allowed ? null : failedSourceId;
     selectedSource = null;
-    publishState({ captureState: 'failed', activeSource: null, statusMessage: message });
-    showWindow();
+    publishState({
+      captureState: recovery.allowed ? 'ready' : 'failed',
+      activeSource: null,
+      statusMessage: recovery.allowed
+        ? `${message} MeetMemento is reconnecting automatically…`
+        : message
+    });
+    if (recovery.allowed) setTimeout(() => void pollMeeting(), 750);
+    else showWindow();
   });
   ipcMain.handle('meetings:list', () => meetingStore.list());
   ipcMain.handle('meetings:file-url', (_event, { id, kind }) => meetingStore.fileUrl(id, kind));
@@ -347,6 +513,7 @@ async function bootApplication() {
   meetingStore = new MeetingStore(recordingsRoot());
   recordingWriter = new RecordingWriter(recordingsRoot());
   transcriptService = new TranscriptService(resourcesPath('transcribe.ps1'));
+  const recoveredMeetings = meetingStore.recoverInterruptedRecordings();
   registerIpc();
 
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => ['media', 'display-capture'].includes(permission));
@@ -365,9 +532,29 @@ async function bootApplication() {
   createWindow();
   createTray();
   applyLoginItem();
+  for (const meeting of meetingStore.list().filter((item) => item.transcriptionStatus === 'processing')) {
+    queueTranscription({
+      ...meeting,
+      folderPath: meetingStore.folder(meeting),
+      wavPath: path.join(meetingStore.folder(meeting), 'transcription-input.wav')
+    });
+  }
+  if (recoveredMeetings.length > 0) {
+    publishState({
+      statusMessage: recoveredMeetings.length === 1
+        ? 'An interrupted recording was recovered. Its available video and audio are ready.'
+        : `${recoveredMeetings.length} interrupted recordings were recovered.`
+    });
+  }
   const hiddenLaunch = process.argv.includes('--hidden') && settingsStore.get().onboardingCompleted;
   if (!hiddenLaunch) showWindow();
   detectorTimer = setInterval(pollMeeting, 1500);
+  rendererHealthTimer = setInterval(() => {
+    if (rendererReady
+        && isHeartbeatStale(rendererLastHeartbeatAt, Date.now(), RENDERER_HEARTBEAT_TIMEOUT_MS)) {
+      recoverRenderer('The recording interface stopped responding.');
+    }
+  }, 5000);
   await pollMeeting();
 }
 
@@ -383,12 +570,15 @@ if (process.argv.includes('--smoke-test')) {
 app.on('before-quit', (event) => {
   if (recordingWriter?.active && !quitting) {
     event.preventDefault();
+    quitAfterSave = true;
     requestStop('MeetMemento is closing.');
-    setTimeout(() => { quitting = true; app.quit(); }, 2500);
     return;
   }
   quitting = true;
   if (detectorTimer) clearInterval(detectorTimer);
+  if (rendererHealthTimer) clearInterval(rendererHealthTimer);
+  clearCaptureStartupWatchdog();
+  clearCaptureFinalizationWatchdog();
 });
 
 app.on('window-all-closed', () => { /* Keep the tray process running. */ });

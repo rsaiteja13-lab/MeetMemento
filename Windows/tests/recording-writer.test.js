@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { MeetingStore } = require('../src/lib/meeting-store');
 const { RecordingWriter } = require('../src/lib/recording-writer');
 
 test('streams video, audio, and PCM to a finalized recording folder', (context) => {
@@ -25,6 +26,35 @@ test('streams video, audio, and PCM to a finalized recording folder', (context) 
   assert.equal(metadata.transcriptionStatus, 'processing');
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
   assert.equal(wav.readUInt32LE(40), 64000);
+  assert.equal(fs.existsSync(path.join(root, result.folderName, 'recording-session.json')), false);
+});
+
+test('recovers streamed files and repairs transcript audio after an interrupted process', (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'meetmemento-recovery-'));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const writer = new RecordingWriter(root);
+  const session = writer.start({
+    title: 'Interrupted meeting',
+    sourceName: 'Zoom Meeting',
+    startedAt: new Date('2026-09-18T10:00:00.000Z')
+  });
+  writer.append(session.id, 'video', Buffer.alloc(4096, 1));
+  writer.append(session.id, 'audio', Buffer.alloc(2048, 2));
+  writer.appendPcm(session.id, Buffer.alloc(64000, 3));
+  for (const handle of [writer.active.videoHandle, writer.active.audioHandle, writer.active.wavHandle]) {
+    fs.closeSync(handle);
+  }
+  writer.active = null;
+
+  const recovered = new MeetingStore(root).recoverInterruptedRecordings();
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].id, session.id);
+  assert.equal(recovered[0].videoFile, 'zoom-screen.webm');
+  assert.equal(recovered[0].audioFile, 'meeting-audio.webm');
+  assert.equal(recovered[0].transcriptionStatus, 'processing');
+  const wav = fs.readFileSync(path.join(root, session.folderName, 'transcription-input.wav'));
+  assert.equal(wav.readUInt32LE(40), 64000);
+  assert.equal(fs.existsSync(path.join(root, session.folderName, 'recording-session.json')), false);
 });
 
 test('does not collide when two meetings start in the same second', (context) => {

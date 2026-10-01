@@ -25,4 +25,15 @@ enum ZoomSignalClassifier {
             || title.contains("screen share")
             || title.contains("webinar")
     }
+
+    static func isMeetingWindow(
+        ownedByMeetingHelper: Bool,
+        title: String,
+        layer: Int,
+        width: Double,
+        height: Double
+    ) -> Bool {
+        guard layer == 0, width >= 160, height >= 90 else { return false }
+        return ownedByMeetingHelper || isMeetingWindowTitle(title)
+    }
 }

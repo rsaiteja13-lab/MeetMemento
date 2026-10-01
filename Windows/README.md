@@ -8,8 +8,8 @@ MeetMemento for Windows is a background Zoom recorder that saves the meeting win
 
 Use the installer matching the computer:
 
-- `MeetMemento-Windows-0.8.0-x64.exe` for most Intel and AMD Windows PCs.
-- `MeetMemento-Windows-0.8.0-arm64.exe` for Windows on ARM.
+- `MeetMemento-Windows-0.8.1-x64.exe` for most Intel and AMD Windows PCs.
+- `MeetMemento-Windows-0.8.1-arm64.exe` for Windows on ARM.
 - The matching `.zip` is a portable build that does not require installation.
 
 This development build is not code-signed. Windows SmartScreen may show **Windows protected your PC**; choose **More info**, confirm the publisher and file source, then choose **Run anyway**. A production release should be signed with an Authenticode certificate.
@@ -23,6 +23,8 @@ The first launch presents one guided setup. It enables automatic recording, opti
 - Windows loopback audio is mixed before it reaches the selected output device, so speakers, USB audio, Bluetooth headphones, and output-device changes are covered.
 - The current default microphone is mixed separately and automatically reopened after an input-device change.
 - Video, audio, and 16 kHz transcription audio are streamed to open files every second. There is no five-second or five-minute recording limit and the full meeting is not held in memory.
+- Capture startup and finalization have independent watchdogs. MeetMemento retries a stalled Windows capture, preserves already-streamed media, and prevents endless recovery loops.
+- If Windows closes the renderer or the computer restarts unexpectedly, incomplete recordings are restored to the library on the next launch and eligible transcript jobs resume automatically.
 - Local transcripts use an installed Windows speech-recognition language. Video and audio still save if no compatible speech language is installed.
 
 ## Build from source

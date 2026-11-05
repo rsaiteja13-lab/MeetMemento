@@ -33,10 +33,9 @@ fi
 
 mkdir -p "$MODULE_CACHE"
 
-# Some standalone Command Line Tools installations retain an older compatible SDK.
-if ! xcodebuild -version >/dev/null 2>&1 && [[ -d /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk ]]; then
-    export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
-fi
+SWIFTC="$(xcrun --find swiftc)"
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export SDKROOT
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
@@ -44,14 +43,17 @@ binary_paths=()
 keeper_binary_paths=()
 source_files=("$PROJECT_DIR"/Sources/MeetMemento/*.swift)
 keeper_source="$PROJECT_DIR/Sources/MeetMementoKeeper/main.swift"
-plugin_path="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins"
+toolchain_usr="$(cd "$(dirname "$SWIFTC")/.." && pwd)"
+plugin_path="$toolchain_usr/lib/swift/host/plugins"
 for architecture in $ARCHITECTURES; do
     binary_dir="$PROJECT_DIR/.build/manual-$architecture/release"
     mkdir -p "$binary_dir"
-    swiftc \
+    "$SWIFTC" \
         -parse-as-library \
         -O \
         -whole-module-optimization \
+        -sdk "$SDKROOT" \
+        -module-cache-path "$MODULE_CACHE" \
         -target "$architecture-apple-macosx13.0" \
         -plugin-path "$plugin_path" \
         "${source_files[@]}" \
@@ -68,10 +70,12 @@ for architecture in $ARCHITECTURES; do
         -framework UserNotifications
     binary_paths+=("$binary_dir/MeetMemento")
 
-    swiftc \
+    "$SWIFTC" \
         -parse-as-library \
         -O \
         -whole-module-optimization \
+        -sdk "$SDKROOT" \
+        -module-cache-path "$MODULE_CACHE" \
         -target "$architecture-apple-macosx13.0" \
         "$keeper_source" \
         -o "$binary_dir/MeetMementoKeeper" \
@@ -97,7 +101,8 @@ icon_source="$PROJECT_DIR/Resources/AppIcon.svg"
 icon_work="$PROJECT_DIR/.build/AppIcon.iconset"
 icon_master="$PROJECT_DIR/.build/AppIcon-1024.png"
 if ! sips -s format png "$icon_source" --out "$icon_master" >/dev/null 2>&1; then
-    swiftc -parse-as-library "$PROJECT_DIR/Tools/IconRenderer.swift" -o "$PROJECT_DIR/.build/IconRenderer"
+        "$SWIFTC" -parse-as-library -sdk "$SDKROOT" -module-cache-path "$MODULE_CACHE" \
+            "$PROJECT_DIR/Tools/IconRenderer.swift" -o "$PROJECT_DIR/.build/IconRenderer"
     "$PROJECT_DIR/.build/IconRenderer" "$icon_master"
 fi
 if [[ -f "$icon_master" ]]; then
@@ -109,7 +114,8 @@ if [[ -f "$icon_master" ]]; then
         sips -z "$double" "$double" "$icon_master" --out "$icon_work/icon_${size}x${size}@2x.png" >/dev/null
     done
     if ! iconutil -c icns "$icon_work" -o "$RESOURCES_DIR/MeetMemento.icns" 2>/dev/null; then
-        swiftc -parse-as-library "$PROJECT_DIR/Tools/IconPacker.swift" -o "$PROJECT_DIR/.build/IconPacker"
+        "$SWIFTC" -parse-as-library -sdk "$SDKROOT" -module-cache-path "$MODULE_CACHE" \
+            "$PROJECT_DIR/Tools/IconPacker.swift" -o "$PROJECT_DIR/.build/IconPacker"
         "$PROJECT_DIR/.build/IconPacker" "$icon_work" "$RESOURCES_DIR/MeetMemento.icns"
     fi
 fi

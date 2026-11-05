@@ -7,12 +7,15 @@ CHECK_BINARY="$PROJECT_DIR/.build/MeetMementoChecks"
 MODULE_CACHE="$PROJECT_DIR/.build/ModuleCache"
 
 mkdir -p "$MODULE_CACHE"
-if ! xcodebuild -version >/dev/null 2>&1 && [[ -d /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk ]]; then
-    export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
-fi
+SWIFTC="$(xcrun --find swiftc)"
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export SDKROOT
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 
-swiftc \
+"$SWIFTC" \
+    -sdk "$SDKROOT" \
+    -module-cache-path "$MODULE_CACHE" \
+    -swift-version 5 \
     "$PROJECT_DIR/Sources/MeetMemento/Models.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/TranscriptFormatter.swift" \
     "$PROJECT_DIR/Sources/MeetMemento/MeetingNamer.swift" \

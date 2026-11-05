@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -26,3 +28,29 @@ jobs:
           # because an ad-hoc signature does not preserve macOS permissions.
           ALLOW_ADHOC_SIGNING: "1"
         run: ./Scripts/build-app.sh
+
+  publish-release-assets:
+    if: github.event_name == 'release'
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v5
+
+      - name: Select signed universal package
+        shell: bash
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          ASSET="ReleaseAssets/MeetMemento-${VERSION}-macOS.zip"
+          test -f "$ASSET"
+          shasum -a 256 "$ASSET"
+          echo "RELEASE_ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Attach macOS package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$RELEASE_ASSET" --clobber

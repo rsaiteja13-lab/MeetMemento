@@ -7,7 +7,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Recording") {
-                Toggle("Automatically record Zoom meetings", isOn: $settings.autoRecord)
+                Toggle("Automatically record meetings", isOn: $settings.autoRecord)
                 Toggle("Include my voice", isOn: $settings.includeMicrophone)
                 Toggle("Keep MeetMemento running in the background", isOn: $settings.launchAtLogin)
             }

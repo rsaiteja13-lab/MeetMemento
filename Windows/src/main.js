@@ -12,8 +12,19 @@ const {
   isHeartbeatStale,
   registerRecoveryAttempt
 } = require('./lib/capture-recovery');
-const { chooseZoomSource, cleanMeetingTitle } = require('./lib/zoom-detector');
+const {
+  chooseManualSource,
+  chooseMeetingSource,
+  cleanMeetingTitle,
+  runningMeetingAppsFromTaskList
+} = require('./lib/zoom-detector');
 const { MeetingStore } = require('./lib/meeting-store');
+const {
+  DETECTOR_INTERVAL_MS,
+  hasConfirmedMeetingEnded,
+  shouldStartRecording,
+  shouldStopRecording
+} = require('./lib/meeting-lifecycle');
 const { RecordingWriter } = require('./lib/recording-writer');
 const { SettingsStore } = require('./lib/settings-store');
 const { TranscriptService } = require('./lib/transcript-service');
@@ -34,9 +45,12 @@ let rendererHealthTimer = null;
 let captureStartupTimer = null;
 let captureFinalizationTimer = null;
 let detectorBusy = false;
+let confirmedMeetingChecks = 0;
 let missedMeetingChecks = 0;
-let suppressedSourceId = null;
-let appState = { captureState: 'ready', zoomState: 'not-running', statusMessage: null, activeSource: null };
+let lastDetectedSourceId = null;
+let suppressAutomaticUntilMeetingEnds = false;
+let manualFallbackCapture = false;
+let appState = { captureState: 'ready', meetingState: 'not-running', statusMessage: null, activeSource: null };
 let quitting = false;
 let quitAfterSave = false;
 let rendererReady = false;
@@ -97,14 +111,14 @@ function showWindow() {
 function rebuildTray() {
   if (!tray) return;
   const recording = appState.captureState === 'recording' || appState.captureState === 'starting';
-  tray.setToolTip(recording ? 'MeetMemento — Recording Zoom' : 'MeetMemento — Ready');
+  tray.setToolTip(recording ? 'MeetMemento — Recording meeting' : 'MeetMemento — Ready');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: recording ? '● Recording Zoom' : 'MeetMemento is ready', enabled: false },
+    { label: recording ? '● Recording meeting' : 'MeetMemento is ready', enabled: false },
     { type: 'separator' },
     { label: 'Open MeetMemento', click: showWindow },
     recording
       ? { label: 'Stop and save recording', click: () => requestStop('Stopped from the tray.', true) }
-      : { label: 'Record Zoom now', click: () => startFromDetection(false) },
+      : { label: 'Record meeting now', click: () => startFromDetection(false) },
     { label: 'Open recordings folder', click: () => shell.openPath(recordingsRoot()) },
     { type: 'separator' },
     { label: 'Hide MeetMemento', click: () => mainWindow?.hide() }
@@ -161,44 +175,73 @@ function createTray() {
   rebuildTray();
 }
 
-function isZoomRunning() {
-  if (process.platform !== 'win32') return Promise.resolve(true);
+function listRunningMeetingApps() {
+  if (process.platform !== 'win32') return Promise.resolve(new Set());
   return new Promise((resolve) => {
     execFile('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 5000 }, (error, stdout) => {
-      if (error) return resolve(true);
-      resolve(/"(?:Zoom|CptHost)\.exe"/i.test(stdout));
+      if (error) return resolve(new Set());
+      resolve(runningMeetingAppsFromTaskList(stdout));
     });
   });
 }
 
 async function detectMeeting() {
-  const [sources, zoomRunning] = await Promise.all([
+  const [sources, runningApps] = await Promise.all([
     desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }),
-    isZoomRunning()
+    listRunningMeetingApps()
   ]);
-  return chooseZoomSource(sources, zoomRunning, selectedSource?.id);
+  return {
+    source: chooseMeetingSource(sources, runningApps, selectedSource?.id),
+    sources,
+    runningApps
+  };
 }
 
 async function pollMeeting() {
   if (detectorBusy) return;
   detectorBusy = true;
   try {
-    const source = await detectMeeting();
-    publishState({ zoomState: source ? 'in-meeting' : await isZoomRunning() ? 'open' : 'not-running' });
+    const { source, sources, runningApps } = await detectMeeting();
+    const manualSourceStillVisible = manualFallbackCapture
+      && selectedSource
+      && sources.some((candidate) => candidate.id === selectedSource.id);
+    publishState({ meetingState: source || manualSourceStillVisible ? 'in-meeting' : runningApps.size > 0 ? 'open' : 'not-running' });
+    if (manualFallbackCapture && appState.captureState === 'recording') {
+      if (manualSourceStillVisible) {
+        missedMeetingChecks = 0;
+      } else {
+        missedMeetingChecks += 1;
+        if (shouldStopRecording(missedMeetingChecks)) await requestStop('Meeting window closed.');
+      }
+      return;
+    }
     if (source) {
+      confirmedMeetingChecks = source.id === lastDetectedSourceId
+        ? confirmedMeetingChecks + 1
+        : 1;
+      lastDetectedSourceId = source.id;
       missedMeetingChecks = 0;
       if (appState.captureState === 'recording' && selectedSource?.id !== source.id) {
         selectedSource = source;
-        publishState({ activeSource: source.name, statusMessage: 'Zoom changed windows. Capture continued automatically.' });
+        publishState({ activeSource: source.name, statusMessage: 'The meeting app changed windows. Capture continued automatically.' });
         send('capture:source-changed', { id: source.id, name: source.name });
-      } else if (['ready', 'failed'].includes(appState.captureState) && source.id !== suppressedSourceId && rendererReady && settingsStore.get().autoRecord && settingsStore.get().onboardingCompleted) {
+      } else if (['ready', 'failed'].includes(appState.captureState)
+          && !suppressAutomaticUntilMeetingEnds
+          && shouldStartRecording(confirmedMeetingChecks)
+          && rendererReady
+          && settingsStore.get().autoRecord
+          && settingsStore.get().onboardingCompleted) {
         await startCapture(source, true);
       }
-    } else if (appState.captureState === 'recording') {
-      missedMeetingChecks += 1;
-      if (missedMeetingChecks >= 4) await requestStop('Zoom meeting ended.');
     } else {
-      suppressedSourceId = null;
+      confirmedMeetingChecks = 0;
+      lastDetectedSourceId = null;
+      missedMeetingChecks += 1;
+      if (appState.captureState === 'recording') {
+        if (shouldStopRecording(missedMeetingChecks)) await requestStop('Meeting ended.');
+      } else if (hasConfirmedMeetingEnded(missedMeetingChecks)) {
+        suppressAutomaticUntilMeetingEnds = false;
+      }
     }
   } catch (error) {
     publishState({ statusMessage: `Meeting detection will retry: ${error.message}` });
@@ -272,6 +315,7 @@ function recoverRenderer(reason) {
   clearCaptureFinalizationWatchdog();
   const recovered = abortActiveRecording(reason);
   selectedSource = null;
+  manualFallbackCapture = false;
   pendingCaptureSourceId = null;
   publishState({
     captureState: recovery.allowed ? 'ready' : 'failed',
@@ -301,10 +345,10 @@ function armCaptureStartupWatchdog(source) {
         || appState.captureState !== 'starting') return;
     const recovery = registerRecoveryAttempt(captureRecoveryAttempts, Date.now());
     captureRecoveryAttempts = recovery.attempts;
-    const stalledSourceId = source?.id || selectedSource?.id || null;
     send('capture:cancel', { reason: 'Windows capture startup timed out.' });
     pendingCaptureSourceId = null;
     selectedSource = null;
+    manualFallbackCapture = false;
     clearCaptureStartupWatchdog();
     if (recovery.allowed) {
       publishState({
@@ -314,11 +358,11 @@ function armCaptureStartupWatchdog(source) {
       });
       setTimeout(() => void pollMeeting(), 750);
     } else {
-      suppressedSourceId = stalledSourceId;
+      suppressAutomaticUntilMeetingEnds = true;
       publishState({
         captureState: 'failed',
         activeSource: null,
-        statusMessage: 'Windows capture did not start after automatic recovery. MeetMemento will try again with the next Zoom meeting.'
+        statusMessage: 'Windows capture did not start after automatic recovery. MeetMemento will try again with the next meeting.'
       });
       showWindow();
     }
@@ -332,6 +376,7 @@ function armCaptureFinalizationWatchdog() {
     send('capture:cancel', { reason: 'Recording finalization timed out.' });
     const recovered = abortActiveRecording('MeetMemento recovered this recording after finalization took too long.');
     selectedSource = null;
+    manualFallbackCapture = false;
     publishState({
       captureState: 'ready',
       activeSource: null,
@@ -347,12 +392,14 @@ function armCaptureFinalizationWatchdog() {
 async function startCapture(source, automatic) {
   if (!source || !rendererReady || !['ready', 'failed'].includes(appState.captureState)) return false;
   selectedSource = source;
+  manualFallbackCapture = Boolean(source.manualFallback);
   missedMeetingChecks = 0;
   publishState({ captureState: 'starting', activeSource: source.name, statusMessage: null });
   armCaptureStartupWatchdog(source);
   send('capture:start', {
     source: { id: source.id, name: source.name },
-    title: cleanMeetingTitle(source.name),
+    title: cleanMeetingTitle(source.name, source.providerName || 'Meeting'),
+    providerName: source.providerName || 'Meeting',
     includeMicrophone: settingsStore.get().includeMicrophone,
     automatic
   });
@@ -360,19 +407,20 @@ async function startCapture(source, automatic) {
 }
 
 async function startFromDetection(showError = true) {
-  const source = await detectMeeting();
+  const detection = await detectMeeting();
+  const source = detection.source || (showError ? chooseManualSource(detection.sources) : null);
   if (!source) {
-    if (showError) publishState({ statusMessage: 'Open or join a Zoom meeting, then try again.' });
+    if (showError) publishState({ statusMessage: 'Open the meeting window, then choose Record meeting now again.' });
     showWindow();
     return false;
   }
-  suppressedSourceId = null;
+  suppressAutomaticUntilMeetingEnds = false;
   return startCapture(source, false);
 }
 
 async function requestStop(reason = null, suppressUntilMeetingEnds = false) {
   if (!['recording', 'starting'].includes(appState.captureState)) return false;
-  if (suppressUntilMeetingEnds) suppressedSourceId = selectedSource?.id || null;
+  if (suppressUntilMeetingEnds) suppressAutomaticUntilMeetingEnds = true;
   publishState({ captureState: 'stopping', statusMessage: reason });
   clearCaptureStartupWatchdog();
   armCaptureFinalizationWatchdog();
@@ -385,6 +433,7 @@ async function finishAndTranscribe(sessionId, details) {
   clearCaptureFinalizationWatchdog();
   const meeting = recordingWriter.finish(sessionId, details);
   selectedSource = null;
+  manualFallbackCapture = false;
   publishState({ captureState: 'ready', activeSource: null, statusMessage: 'Recording saved. Creating the transcript locally…' });
   send('library:changed');
 
@@ -435,7 +484,7 @@ function registerIpc() {
     publishState({ captureState: 'recording', statusMessage: null });
     showNotification(
       'MeetMemento is recording',
-      `${details.sourceName || 'Zoom meeting'} is being recorded locally.`
+      `${details.sourceName || 'Meeting'} is being recorded locally.`
     );
     return sessionInfo;
   });
@@ -454,13 +503,13 @@ function registerIpc() {
     clearCaptureStartupWatchdog();
     clearCaptureFinalizationWatchdog();
     abortActiveRecording(message);
-    const failedSourceId = selectedSource?.id || null;
     const recovery = detail.retry
       ? registerRecoveryAttempt(captureRecoveryAttempts, Date.now())
       : { allowed: false, attempts: captureRecoveryAttempts };
     captureRecoveryAttempts = recovery.attempts;
-    suppressedSourceId = recovery.allowed ? null : failedSourceId;
+    suppressAutomaticUntilMeetingEnds = !recovery.allowed;
     selectedSource = null;
+    manualFallbackCapture = false;
     publishState({
       captureState: recovery.allowed ? 'ready' : 'failed',
       activeSource: null,
@@ -484,6 +533,25 @@ function registerIpc() {
     await shell.trashItem(meetingStore.folder(meeting));
     send('library:changed');
     return true;
+  });
+  ipcMain.handle('meetings:delete-many', async (_event, ids) => {
+    const uniqueIds = [...new Set(Array.isArray(ids) ? ids : [])]
+      .filter((id) => typeof id === 'string')
+      .slice(0, 1000);
+    const movedIds = [];
+    const failures = [];
+    for (const id of uniqueIds) {
+      const meeting = meetingStore.find(id);
+      if (!meeting) continue;
+      try {
+        await shell.trashItem(meetingStore.folder(meeting));
+        movedIds.push(id);
+      } catch (error) {
+        failures.push({ id, message: error.message });
+      }
+    }
+    if (movedIds.length > 0) send('library:changed');
+    return { movedIds, failures };
   });
   ipcMain.handle('meetings:export', async (_event, id) => {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] });
@@ -548,7 +616,7 @@ async function bootApplication() {
   }
   const hiddenLaunch = process.argv.includes('--hidden') && settingsStore.get().onboardingCompleted;
   if (!hiddenLaunch) showWindow();
-  detectorTimer = setInterval(pollMeeting, 1500);
+  detectorTimer = setInterval(pollMeeting, DETECTOR_INTERVAL_MS);
   rendererHealthTimer = setInterval(() => {
     if (rendererReady
         && isHeartbeatStale(rendererLastHeartbeatAt, Date.now(), RENDERER_HEARTBEAT_TIMEOUT_MS)) {

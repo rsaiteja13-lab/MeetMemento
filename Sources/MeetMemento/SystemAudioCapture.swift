@@ -6,7 +6,7 @@ import Foundation
 import ScreenCaptureKit
 
 enum CaptureError: LocalizedError {
-    case zoomNotRunning
+    case meetingAppNotRunning
     case noDisplay
     case noAudioReceived
     case noVideoReceived
@@ -14,24 +14,24 @@ enum CaptureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .zoomNotRunning: return "Zoom is not running."
+        case .meetingAppNotRunning: return "The meeting window is no longer available."
         case .noDisplay: return "MeetMemento couldn’t find a screen to record."
         case .noAudioReceived: return "No meeting audio was captured."
-        case .noVideoReceived: return "No Zoom video was captured."
+        case .noVideoReceived: return "No meeting video was captured."
         case .writerFailed(let message): return "MeetMemento couldn’t save the recording: \(message)"
         }
     }
 }
 
-/// Uses independent ScreenCaptureKit streams for Zoom video and system audio.
-/// Zoom's audio can be produced by helper processes that are not represented by
-/// Zoom's visible windows, so the audio stream captures every audible app while
-/// a Zoom meeting is active and excludes MeetMemento itself. The video stream
-/// remains scoped to Zoom's windows.
+/// Uses independent ScreenCaptureKit streams for meeting video and system audio.
+/// The audio stream captures every audible app while a detected meeting is active
+/// and excludes MeetMemento itself. The video stream remains scoped to the native
+/// meeting application or to the detected browser meeting window.
 final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let audioOutputURL: URL
     private let videoOutputURL: URL
-    private let videoQueue = DispatchQueue(label: "MeetMemento.ZoomVideo")
+    private let captureTarget: MeetingCaptureTarget
+    private let videoQueue = DispatchQueue(label: "MeetMemento.MeetingVideo")
     private let audioQueue = DispatchQueue(label: "MeetMemento.SystemAudio")
     private let logQueue = DispatchQueue(label: "MeetMemento.CaptureDiagnostics")
     private let stateLock = NSLock()
@@ -62,18 +62,24 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var appendedVideoSamples = 0
     private var videoWriterError: Error?
 
-    init(audioOutputURL: URL, videoOutputURL: URL) {
+    init(audioOutputURL: URL, videoOutputURL: URL, captureTarget: MeetingCaptureTarget) {
         self.audioOutputURL = audioOutputURL
         self.videoOutputURL = videoOutputURL
+        self.captureTarget = captureTarget
     }
 
     func start() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
-        let zoomApplications = content.applications.filter(Self.isZoomApplication)
-        guard !zoomApplications.isEmpty else {
-            throw CaptureError.zoomNotRunning
+        let meetingApplications = matchingApplications(in: content)
+        let meetingWindows = matchingWindows(in: content, applications: meetingApplications)
+        guard !meetingApplications.isEmpty || !meetingWindows.isEmpty else {
+            throw CaptureError.meetingAppNotRunning
         }
-        guard let display = Self.captureDisplay(in: content, for: zoomApplications) else {
+        guard let display = Self.captureDisplay(
+            in: content,
+            for: meetingApplications,
+            preferredWindows: meetingWindows
+        ) else {
             throw CaptureError.noDisplay
         }
 
@@ -86,7 +92,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             lastVideoCallbackAt = Date()
             lastVideoFilterRefreshAt = Date()
         }
-        log("Capture starting on display \(display.displayID); Zoom processes: \(Self.zoomProcessDescription(zoomApplications))")
+        log("Capture starting for \(captureTarget.displayName) on display \(display.displayID); processes: \(Self.processDescription(meetingApplications))")
         try prepareMovieWriter(for: display)
 
         let audioConfiguration = SCStreamConfiguration()
@@ -96,7 +102,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         audioConfiguration.channelCount = 2
         // No screen output is attached to this stream. Small dimensions keep its
         // internal surface inexpensive while audio continues independently of
-        // Zoom window and helper-process changes.
+        // Meeting-window and helper-process changes.
         audioConfiguration.width = 2
         audioConfiguration.height = 2
         audioConfiguration.minimumFrameInterval = CMTime(seconds: 1, preferredTimescale: 1)
@@ -118,7 +124,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         let videoStream = try makeVideoStream(
             content: content,
             display: display,
-            zoomApplications: zoomApplications
+            meetingApplications: meetingApplications,
+            meetingWindows: meetingWindows
         )
         self.videoStream = videoStream
 
@@ -171,7 +178,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         if isCurrentVideoStream(stream) {
-            requestVideoRestart(reason: "ScreenCaptureKit stopped the Zoom video stream: \(error.localizedDescription)")
+            requestVideoRestart(reason: "ScreenCaptureKit stopped the meeting video stream: \(error.localizedDescription)")
         } else if stream === audioStream, !stoppingSnapshot() {
             log("System-audio stream stopped unexpectedly: \(error.localizedDescription)")
             audioQueue.async { [weak self] in
@@ -307,7 +314,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         videoInput.mediaTimeScale = 600
 
         guard writer.canAdd(videoInput) else {
-            throw CaptureError.writerFailed("This Mac cannot create the Zoom video file")
+            throw CaptureError.writerFailed("This Mac cannot create the meeting video file")
         }
         writer.add(videoInput)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
@@ -354,7 +361,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                     return
                 }
                 // ScreenCaptureKit sends an idle status instead of another complete
-                // pixel buffer when a Zoom window is unchanged. Append the last
+                // pixel buffer when a meeting window is unchanged. Append the last
                 // picture at stop time so a static meeting still has the full
                 // meeting duration instead of a five-second movie.
                 var finalTimestamp = currentVideoTimelineTimestamp()
@@ -455,7 +462,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private func makeVideoStream(
         content: SCShareableContent,
         display: SCDisplay,
-        zoomApplications: [SCRunningApplication]
+        meetingApplications: [SCRunningApplication],
+        meetingWindows: [SCWindow]
     ) throws -> SCStream {
         let dimensions = captureDimensions ?? Self.outputDimensions(for: display)
         let configuration = SCStreamConfiguration()
@@ -469,7 +477,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 10)
         configuration.queueDepth = 5
 
-        let filter = SCContentFilter(display: display, including: zoomApplications, exceptingWindows: [])
+        let filter = makeVideoFilter(
+            display: display,
+            meetingApplications: meetingApplications,
+            meetingWindows: meetingWindows
+        )
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
         return stream
@@ -491,7 +503,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private func checkVideoHealth() async {
         // ScreenCaptureKit may report an idle frame instead of a new image when
-        // Zoom is visually static. Duplicate the last picture periodically so
+        // A meeting can be visually static. Duplicate the last picture periodically so
         // long recordings and crash-recoverable fragments keep advancing.
         videoQueue.async { [weak self] in
             self?.appendVideoKeepaliveFrame()
@@ -508,7 +520,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard !snapshot.shouldStop, !snapshot.recoveryInProgress else { return }
 
         if snapshot.secondsSinceCallback > 10 {
-            requestVideoRestart(reason: "No Zoom video callbacks arrived for \(Int(snapshot.secondsSinceCallback)) seconds")
+            requestVideoRestart(reason: "No meeting video callbacks arrived for \(Int(snapshot.secondsSinceCallback)) seconds")
         } else if snapshot.secondsSinceFilterRefresh > 12 {
             await refreshVideoFilter()
         }
@@ -518,18 +530,27 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard let stream = currentVideoStream(), !stoppingSnapshot() else { return }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
-            let zoomApplications = content.applications.filter(Self.isZoomApplication)
-            guard !zoomApplications.isEmpty else { return }
+            let meetingApplications = matchingApplications(in: content)
+            let meetingWindows = matchingWindows(in: content, applications: meetingApplications)
+            guard !meetingApplications.isEmpty || !meetingWindows.isEmpty else { return }
             let display = content.displays.first(where: { $0.displayID == captureDisplayID })
-                ?? Self.captureDisplay(in: content, for: zoomApplications)
+                ?? Self.captureDisplay(
+                    in: content,
+                    for: meetingApplications,
+                    preferredWindows: meetingWindows
+                )
             guard let display else { throw CaptureError.noDisplay }
-            let filter = SCContentFilter(display: display, including: zoomApplications, exceptingWindows: [])
+            let filter = makeVideoFilter(
+                display: display,
+                meetingApplications: meetingApplications,
+                meetingWindows: meetingWindows
+            )
             try await stream.updateContentFilter(filter)
             guard isCurrentVideoStream(stream) else { return }
             withLockedState { lastVideoFilterRefreshAt = Date() }
-            log("Refreshed Zoom video filter; processes: \(Self.zoomProcessDescription(zoomApplications))")
+            log("Refreshed \(captureTarget.displayName) video filter; processes: \(Self.processDescription(meetingApplications))")
         } catch {
-            requestVideoRestart(reason: "Zoom video filter refresh failed: \(error.localizedDescription)")
+            requestVideoRestart(reason: "Meeting video filter refresh failed: \(error.localizedDescription)")
         }
     }
 
@@ -544,7 +565,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         videoStream = nil
         stateLock.unlock()
 
-        log("Restarting Zoom video stream: \(reason)")
+        log("Restarting meeting video stream: \(reason)")
         Task { [weak self] in
             await self?.recoverVideoStream(oldStream: oldStream)
         }
@@ -557,15 +578,23 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             attempt += 1
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
-                let zoomApplications = content.applications.filter(Self.isZoomApplication)
-                guard !zoomApplications.isEmpty else { throw CaptureError.zoomNotRunning }
+                let meetingApplications = matchingApplications(in: content)
+                let meetingWindows = matchingWindows(in: content, applications: meetingApplications)
+                guard !meetingApplications.isEmpty || !meetingWindows.isEmpty else {
+                    throw CaptureError.meetingAppNotRunning
+                }
                 let display = content.displays.first(where: { $0.displayID == captureDisplayID })
-                    ?? Self.captureDisplay(in: content, for: zoomApplications)
+                    ?? Self.captureDisplay(
+                        in: content,
+                        for: meetingApplications,
+                        preferredWindows: meetingWindows
+                    )
                 guard let display else { throw CaptureError.noDisplay }
                 let replacement = try makeVideoStream(
                     content: content,
                     display: display,
-                    zoomApplications: zoomApplications
+                    meetingApplications: meetingApplications,
+                    meetingWindows: meetingWindows
                 )
 
                 let shouldInstall = withLockedState {
@@ -592,10 +621,10 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 }
 
                 withLockedState { videoRestartInProgress = false }
-                log("Zoom video stream recovered on attempt \(attempt); processes: \(Self.zoomProcessDescription(zoomApplications))")
+                log("Meeting video stream recovered on attempt \(attempt); processes: \(Self.processDescription(meetingApplications))")
                 return
             } catch {
-                log("Zoom video recovery attempt \(attempt) failed: \(error.localizedDescription)")
+                log("Meeting video recovery attempt \(attempt) failed: \(error.localizedDescription)")
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -641,35 +670,77 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
     }
 
-    private static func zoomProcessDescription(_ applications: [SCRunningApplication]) -> String {
+    private func matchingApplications(in content: SCShareableContent) -> [SCRunningApplication] {
+        content.applications.filter { application in
+            if captureTarget.processIdentifiers.contains(Int32(application.processID)) {
+                return true
+            }
+            guard !captureTarget.capturesWindowsOnly else { return false }
+            return MeetingSignalClassifier.applicationProvider(
+                bundleIdentifier: application.bundleIdentifier,
+                localizedName: application.applicationName
+            ) == captureTarget.provider
+        }
+    }
+
+    private func matchingWindows(
+        in content: SCShareableContent,
+        applications: [SCRunningApplication]
+    ) -> [SCWindow] {
+        guard captureTarget.capturesWindowsOnly else { return [] }
+        let initialWindowIDs = Set(captureTarget.windowIdentifiers)
+        let processIDs = Set(applications.map(\.processID))
+        return content.windows.filter { window in
+            if initialWindowIDs.contains(UInt32(window.windowID)) { return true }
+            guard let owner = window.owningApplication,
+                  processIDs.contains(owner.processID),
+                  window.isOnScreen else { return false }
+            return MeetingSignalClassifier.windowMatch(
+                bundleIdentifier: owner.bundleIdentifier,
+                localizedName: owner.applicationName,
+                title: window.title ?? ""
+            )?.provider == captureTarget.provider
+        }
+    }
+
+    private func makeVideoFilter(
+        display: SCDisplay,
+        meetingApplications: [SCRunningApplication],
+        meetingWindows: [SCWindow]
+    ) -> SCContentFilter {
+        if captureTarget.capturesWindowsOnly, !meetingWindows.isEmpty {
+            return SCContentFilter(display: display, including: meetingWindows)
+        }
+        return SCContentFilter(
+            display: display,
+            including: meetingApplications,
+            exceptingWindows: []
+        )
+    }
+
+    private static func processDescription(_ applications: [SCRunningApplication]) -> String {
         applications
             .map { "\($0.applicationName)[\($0.processID)]" }
             .sorted()
             .joined(separator: ", ")
     }
 
-    private static func isZoomApplication(_ application: SCRunningApplication) -> Bool {
-        let bundleID = application.bundleIdentifier.lowercased()
-        let name = application.applicationName.lowercased()
-        return bundleID == "us.zoom.xos"
-            || bundleID.contains("zoom")
-            || name == "zoom"
-            || name == "zoom.us"
-            || name == "zoom workplace"
-            || name == "caphost"
-            || name == "cpthost"
-    }
-
     private static func captureDisplay(
         in content: SCShareableContent,
-        for zoomApplications: [SCRunningApplication]
+        for meetingApplications: [SCRunningApplication],
+        preferredWindows: [SCWindow]
     ) -> SCDisplay? {
         guard !content.displays.isEmpty else { return nil }
-        let processIDs = Set(zoomApplications.map(\.processID))
-        guard let largestZoomWindow = content.windows
-            .filter({ window in
+        let processIDs = Set(meetingApplications.map(\.processID))
+        let candidateWindows = preferredWindows.isEmpty
+            ? content.windows.filter { window in
                 guard let owner = window.owningApplication else { return false }
                 return processIDs.contains(owner.processID) && window.isOnScreen
+            }
+            : preferredWindows.filter(\.isOnScreen)
+        guard let largestMeetingWindow = candidateWindows
+            .filter({ window in
+                window.frame.width >= 160 && window.frame.height >= 90
             })
             .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
         else {
@@ -677,8 +748,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
 
         return content.displays.max { left, right in
-            left.frame.intersection(largestZoomWindow.frame).area
-                < right.frame.intersection(largestZoomWindow.frame).area
+            left.frame.intersection(largestMeetingWindow.frame).area
+                < right.frame.intersection(largestMeetingWindow.frame).area
         }
     }
 

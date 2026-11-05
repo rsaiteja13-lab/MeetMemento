@@ -55,42 +55,36 @@ struct MeetingDetailView: View {
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Label("Full meeting audio", systemImage: "waveform")
-                            .font(.headline)
-                        Spacer()
-                        if model.library.fileURL(for: meeting, kind: .audio) != nil {
-                            Button("Download Audio") { model.download(.audio, for: meeting) }
-                        }
-                    }
-                    if let audioURL = model.library.fileURL(for: meeting, kind: .audio) {
-                        MeetingAudioPlayer(url: audioURL)
-                            .id(audioURL)
-                    } else {
-                        Label(
-                            "No audio was saved for this meeting. Check microphone access in MeetMemento Settings before your next call.",
-                            systemImage: "mic.slash"
-                        )
-                        .foregroundStyle(.orange)
-                    }
-                }
-                .padding(16)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-
                 if let videoFile = meeting.videoFile {
+                    let playbackAudioURL = model.library.fileURL(for: meeting, kind: .audio)
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Label("Meeting video", systemImage: "play.rectangle.fill")
+                            Label("Meeting video and audio", systemImage: "play.rectangle.fill")
                                 .font(.headline)
                             Spacer()
+                            if playbackAudioURL != nil {
+                                Button("Download Audio") { model.download(.audio, for: meeting) }
+                            }
                             Button("Download Video") { model.download(.video, for: meeting) }
                         }
                         MeetingVideoPlayer(
-                            url: model.library.folder(for: meeting).appendingPathComponent(videoFile)
+                            videoURL: model.library.folder(for: meeting).appendingPathComponent(videoFile),
+                            audioURL: playbackAudioURL
                         )
                         .frame(minHeight: 240, idealHeight: 340, maxHeight: 420)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                        if playbackAudioURL != nil {
+                            Label(
+                                "Playback uses the clean meeting-audio track to avoid speaker echo. Your microphone track remains available in Export All Files.",
+                                systemImage: "waveform.badge.checkmark"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Label("This video has no playable audio track.", systemImage: "speaker.slash")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
                 } else if meeting.errorMessage?.localizedCaseInsensitiveContains("video") == true {
                     VStack(alignment: .leading, spacing: 10) {
@@ -106,6 +100,34 @@ struct MeetingDetailView: View {
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                if meeting.videoFile == nil {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Label("Meeting audio", systemImage: "waveform")
+                                .font(.headline)
+                            Spacer()
+                            if model.library.fileURL(for: meeting, kind: .audio) != nil {
+                                Button("Download Audio") { model.download(.audio, for: meeting) }
+                            }
+                        }
+                        if let audioURL = model.library.fileURL(for: meeting, kind: .audio) {
+                            MeetingAudioPlayer(url: audioURL)
+                                .id(audioURL)
+                            Text("The clean system-audio track is used when available to prevent speaker echo.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Label(
+                                "No audio was saved for this meeting. Check microphone access in MeetMemento Settings before your next call.",
+                                systemImage: "mic.slash"
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(16)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                 }
 
@@ -352,14 +374,10 @@ private struct MeetingAudioPlayer: View {
 }
 
 private struct MeetingVideoPlayer: View {
-    @ViewState private var player: AVPlayer
+    @ViewState private var player = AVPlayer()
     @ViewState private var state: VideoState = .checking
-    let url: URL
-
-    init(url: URL) {
-        self.url = url
-        _player = State(initialValue: AVPlayer(url: url))
-    }
+    let videoURL: URL
+    let audioURL: URL?
 
     var body: some View {
         Group {
@@ -394,11 +412,18 @@ private struct MeetingVideoPlayer: View {
                 .background(.quaternary)
             }
         }
-        .task(id: url) {
-            let asset = AVURLAsset(url: url)
+        .task(id: playbackIdentity) {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            state = .checking
             do {
-                let isPlayable = try await asset.load(.isPlayable)
-                state = isPlayable ? .playable : .failed
+                let asset = try await MeetingMediaComposer.synchronizedAsset(
+                    videoURL: videoURL,
+                    audioURL: audioURL
+                )
+                guard !Task.isCancelled else { return }
+                player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
+                state = .playable
             } catch {
                 state = .failed
             }
@@ -410,6 +435,10 @@ private struct MeetingVideoPlayer: View {
         case checking
         case playable
         case failed
+    }
+
+    private var playbackIdentity: String {
+        videoURL.path + "|" + (audioURL?.path ?? "silent")
     }
 }
 

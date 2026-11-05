@@ -34,6 +34,16 @@ function startedAtFromFolder(folderName) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function availableExportDestination(destinationRoot, baseName) {
+  let destination = path.join(destinationRoot, baseName);
+  let suffix = 2;
+  while (fs.existsSync(destination)) {
+    destination = path.join(destinationRoot, `${baseName} ${suffix}`);
+    suffix += 1;
+  }
+  return destination;
+}
+
 function repairWavHeader(wavPath) {
   const size = safeStat(wavPath)?.size || 0;
   if (size <= WAV_HEADER_BYTES) return false;
@@ -74,21 +84,26 @@ class MeetingStore {
       if (fs.existsSync(metadataPath)) continue;
 
       const session = readMetadataFile(path.join(folderPath, 'recording-session.json')) || {};
-      const videoPath = path.join(folderPath, 'zoom-screen.webm');
+      const modernVideoPath = path.join(folderPath, 'meeting-screen.webm');
+      const legacyVideoPath = path.join(folderPath, 'zoom-screen.webm');
+      const videoPath = safeStat(modernVideoPath) ? modernVideoPath : legacyVideoPath;
       const audioPath = path.join(folderPath, 'meeting-audio.webm');
+      const microphonePath = path.join(folderPath, 'my-microphone.webm');
       const wavPath = path.join(folderPath, 'transcription-input.wav');
       const videoStat = safeStat(videoPath);
       const audioStat = safeStat(audioPath);
+      const microphoneStat = safeStat(microphonePath);
       const wavStat = safeStat(wavPath);
       const videoValid = (videoStat?.size || 0) > 1024;
       const audioValid = (audioStat?.size || 0) > 256;
+      const microphoneValid = (microphoneStat?.size || 0) > 256;
       const speechInputValid = (wavStat?.size || 0) > WAV_HEADER_BYTES + 3200;
-      if (!videoValid && !audioValid && !speechInputValid) continue;
+      if (!videoValid && !audioValid && !microphoneValid && !speechInputValid) continue;
 
       const folderStartedAt = startedAtFromFolder(entry.name);
       let startedAt = new Date(session.startedAt || folderStartedAt || Date.now());
       if (Number.isNaN(startedAt.getTime())) startedAt = folderStartedAt || new Date();
-      const latestModifiedAt = [videoStat, audioStat, wavStat]
+      const latestModifiedAt = [videoStat, audioStat, microphoneStat, wavStat]
         .filter(Boolean)
         .map((stat) => stat.mtime)
         .sort((left, right) => right - left)[0] || startedAt;
@@ -102,14 +117,15 @@ class MeetingStore {
 
       const metadata = {
         id: session.id || crypto.randomUUID(),
-        title: session.title || 'Recovered Zoom meeting',
-        sourceName: session.sourceName || 'Zoom meeting',
+        title: session.title || 'Recovered meeting',
+        sourceName: session.sourceName || 'Meeting',
         startedAt: startedAt.toISOString(),
         endedAt: latestModifiedAt.toISOString(),
         durationSeconds: Math.max(0, (latestModifiedAt.getTime() - startedAt.getTime()) / 1000),
         folderName: entry.name,
         videoFile: videoValid ? path.basename(videoPath) : null,
         audioFile: audioValid ? path.basename(audioPath) : null,
+        microphoneFile: microphoneValid ? path.basename(microphonePath) : null,
         transcriptFile: null,
         transcriptionStatus: speechInputValid ? 'processing' : 'failed',
         errorMessage: warnings.join(' ')
@@ -157,9 +173,14 @@ class MeetingStore {
   exportFiles(id, destinationRoot) {
     const meeting = this.find(id);
     if (!meeting) throw new Error('Recording not found.');
-    const destination = path.join(destinationRoot, safeName(meeting.title));
-    fs.mkdirSync(destination, { recursive: true });
-    const names = [meeting.videoFile, meeting.audioFile, meeting.transcriptFile].filter(Boolean);
+    const destination = availableExportDestination(destinationRoot, safeName(meeting.title));
+    fs.mkdirSync(destination, { recursive: false });
+    const names = [
+      meeting.videoFile,
+      meeting.audioFile,
+      meeting.microphoneFile,
+      meeting.transcriptFile
+    ].filter(Boolean);
     for (const name of names) {
       const fileName = path.basename(name);
       fs.copyFileSync(path.join(this.folder(meeting), fileName), path.join(destination, fileName));
@@ -175,6 +196,7 @@ function readMetadataFile(filePath) {
 
 module.exports = {
   MeetingStore,
+  availableExportDestination,
   readMetadata,
   repairWavHeader,
   safeName,

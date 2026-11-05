@@ -21,17 +21,22 @@
       <section class="capture-card" aria-live="polite">
         <div class="capture-status-row">
           <span id="captureDot" class="status-dot"></span>
-          <span id="captureTitle">Ready for Zoom</span>
+          <span id="captureTitle">Ready for meetings</span>
         </div>
-        <p id="captureDescription">MeetMemento is watching for your next Zoom meeting.</p>
-        <button id="captureButton" class="primary-button wide" type="button">Record Zoom now</button>
+        <p id="captureDescription">MeetMemento is watching supported meeting apps.</p>
+        <button id="captureButton" class="primary-button wide" type="button">Record meeting now</button>
       </section>
 
       <div class="library-heading">
-        <span>Recordings</span>
-        <span id="meetingCount" class="count-pill">0</span>
+        <span>Recordings <span id="meetingCount" class="count-pill">0</span></span>
+        <button id="selectMeetings" class="library-select-button" type="button">Select</button>
       </div>
       <nav id="meetingList" class="meeting-list" aria-label="Meeting recordings"></nav>
+      <div id="bulkMeetingActions" class="bulk-meeting-actions" hidden>
+        <button id="selectAllMeetings" class="text-button" type="button">Select all</button>
+        <span id="selectedMeetingCount">0 selected</span>
+        <button id="deleteSelectedMeetings" class="small-button danger-button" type="button">Delete</button>
+      </div>
 
       <div class="sidebar-footer">
         <button id="openRecycleBin" class="text-button" type="button">
@@ -48,7 +53,7 @@
         <div>
           <p class="eyebrow">MEETING RECORDING</p>
           <h1 id="meetingTitle">Your recordings will appear here</h1>
-          <p id="meetingMeta" class="meeting-meta">Join a Zoom meeting and MeetMemento will begin automatically.</p>
+          <p id="meetingMeta" class="meeting-meta">Join a meeting and MeetMemento will begin automatically.</p>
         </div>
         <div id="meetingActions" class="meeting-actions" hidden>
           <button id="renameMeeting" class="secondary-button" type="button">Rename</button>
@@ -65,8 +70,8 @@
           <div class="empty-wave"></div>
         </div>
         <h2>No recording selected</h2>
-        <p>When a Zoom meeting starts, its video, audio, and transcript will be saved privately on this computer.</p>
-        <button id="emptyRecordButton" class="primary-button" type="button">Record an open Zoom meeting</button>
+        <p>When a supported meeting starts, its video, audio, and transcript will be saved privately on this computer.</p>
+        <button id="emptyRecordButton" class="primary-button" type="button">Record an open meeting</button>
       </section>
 
       <section id="meetingDetail" class="meeting-detail" hidden>
@@ -83,12 +88,13 @@
           <article class="content-card audio-card">
             <div class="card-heading">
               <div>
-                <p class="eyebrow">FULL RECORDING</p>
+                <p class="eyebrow">CLEAN PLAYBACK</p>
                 <h2>Meeting audio</h2>
               </div>
               <button id="openMeetingFolder" class="small-button" type="button">Show files</button>
             </div>
             <audio id="audioPlayer" controls preload="metadata"></audio>
+            <p class="media-note">Uses clean computer audio to prevent speaker echo. Your processed microphone track remains available in downloaded files.</p>
             <p id="audioUnavailable" class="inline-message" hidden>Audio was not captured for this recording.</p>
           </article>
 
@@ -113,9 +119,9 @@
         <div class="setup-logo"><span></span></div>
         <p>MeetMemento for Windows</p>
         <h1>Never lose the full meeting.</h1>
-        <p class="setup-lead">Automatically keep the Zoom screen, complete meeting audio, and a local transcript—even when you switch headphones.</p>
+        <p class="setup-lead">Automatically keep the meeting screen, clean meeting audio, a separate microphone track, and a local transcript—even when you switch headphones.</p>
         <div class="setup-features">
-          <div><span>✓</span><p><strong>Automatic capture</strong><br>Starts and stops with Zoom.</p></div>
+          <div><span>✓</span><p><strong>Automatic capture</strong><br>Starts and stops with supported meeting apps.</p></div>
           <div><span>✓</span><p><strong>All audio outputs</strong><br>Speakers and headphones are covered.</p></div>
           <div><span>✓</span><p><strong>Private by default</strong><br>Files stay on this computer.</p></div>
         </div>
@@ -127,11 +133,11 @@
 
         <label class="setup-option">
           <input id="setupAutoRecord" type="checkbox" checked>
-          <span><strong>Record Zoom meetings automatically</strong><small>MeetMemento watches for Zoom while it runs in the background.</small></span>
+          <span><strong>Record meetings automatically</strong><small>MeetMemento watches Zoom, Google Meet, Teams, Webex, and other calling apps in the background.</small></span>
         </label>
         <label class="setup-option">
           <input id="setupMicrophone" type="checkbox" checked>
-          <span><strong>Include my microphone</strong><small>Keeps your side of the conversation if Zoom output does not include it.</small></span>
+          <span><strong>Include my microphone</strong><small>Keeps your side of the conversation if the meeting app’s output does not include it.</small></span>
         </label>
         <label class="setup-option">
           <input id="setupLogin" type="checkbox" checked>
@@ -155,8 +161,8 @@
         <div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div>
         <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
       </div>
-      <label class="setting-row"><span><strong>Automatic recording</strong><small>Start when a Zoom meeting is detected.</small></span><input id="autoRecordSetting" type="checkbox"></label>
-      <label class="setting-row"><span><strong>Include microphone</strong><small>Capture your voice together with computer audio.</small></span><input id="microphoneSetting" type="checkbox"></label>
+      <label class="setting-row"><span><strong>Automatic recording</strong><small>Start when a supported meeting is detected.</small></span><input id="autoRecordSetting" type="checkbox"></label>
+      <label class="setting-row"><span><strong>Include microphone</strong><small>Save an echo-reduced microphone track alongside clean computer audio.</small></span><input id="microphoneSetting" type="checkbox"></label>
       <label class="setting-row"><span><strong>Launch at sign-in</strong><small>Keep automatic recording ready after Windows starts.</small></span><input id="loginSetting" type="checkbox"></label>
       <div class="settings-actions">
         <button id="openRecordingsFolder" class="secondary-button" type="button">Open recordings folder</button>

@@ -7,6 +7,9 @@ struct ContentView: View {
     @EnvironmentObject private var library: MeetingLibrary
     @ViewState private var searchText = ""
     @ViewState private var meetingPendingDeletion: MeetingRecord?
+    @ViewState private var isSelectingMeetings = false
+    @ViewState private var selectedMeetingIDs = Set<UUID>()
+    @ViewState private var showBulkDeleteConfirmation = false
 
     var body: some View {
         Group {
@@ -34,6 +37,7 @@ struct ContentView: View {
                     .padding(.vertical, 12)
 
                 Button {
+                    if isSelectingMeetings { endMeetingSelection() }
                     withAnimation(.easeInOut(duration: 0.2)) {
                         model.selectedMeetingID = nil
                     }
@@ -53,6 +57,32 @@ struct ContentView: View {
                 .padding(.bottom, 6)
                 .accessibilityIdentifier("sidebar-home-button")
 
+                HStack(spacing: 8) {
+                    Text("Recordings")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    Text("\(filteredMeetings.count)")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.quaternary, in: Capsule())
+                    Spacer()
+                    Button(isSelectingMeetings ? "Done" : "Select") {
+                        if isSelectingMeetings {
+                            endMeetingSelection()
+                        } else {
+                            isSelectingMeetings = true
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.indigo)
+                    .disabled(filteredMeetings.isEmpty && !isSelectingMeetings)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 5)
+
                 List(selection: $model.selectedMeetingID) {
                     ForEach(calendarGroups) { month in
                         Section {
@@ -62,18 +92,40 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.top, 4)
                                 ForEach(day.meetings) { meeting in
-                                    MeetingRow(
-                                        meeting: meeting,
-                                        isSelected: model.selectedMeetingID == meeting.id
-                                    ) {
-                                        meetingPendingDeletion = meeting
-                                    }
-                                        .tag(meeting.id)
-                                        .contextMenu {
-                                            RecordingContextMenu(meeting: meeting) {
-                                                meetingPendingDeletion = meeting
-                                            }
+                                    if isSelectingMeetings {
+                                        Button {
+                                            toggleMeetingSelection(meeting)
+                                        } label: {
+                                            MeetingRow(
+                                                meeting: meeting,
+                                                isSelected: selectedMeetingIDs.contains(meeting.id),
+                                                isSelectionMode: true,
+                                                isBulkSelected: selectedMeetingIDs.contains(meeting.id)
+                                            ) {}
                                         }
+                                        .buttonStyle(.plain)
+                                        .disabled(meeting.transcriptionStatus == .processing)
+                                        .help(
+                                            meeting.transcriptionStatus == .processing
+                                                ? "Wait for this transcript to finish before deleting the recording"
+                                                : "Select this recording"
+                                        )
+                                    } else {
+                                        MeetingRow(
+                                            meeting: meeting,
+                                            isSelected: model.selectedMeetingID == meeting.id,
+                                            isSelectionMode: false,
+                                            isBulkSelected: false
+                                        ) {
+                                            meetingPendingDeletion = meeting
+                                        }
+                                            .tag(meeting.id)
+                                            .contextMenu {
+                                                RecordingContextMenu(meeting: meeting) {
+                                                    meetingPendingDeletion = meeting
+                                                }
+                                            }
+                                    }
                                 }
                             }
                         } header: {
@@ -90,7 +142,7 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                             Text(searchText.isEmpty ? "No recordings yet" : "No matches")
                                 .font(.subheadline.weight(.semibold))
-                            Text(searchText.isEmpty ? "Your Zoom meetings will appear here." : "Try a different search.")
+                            Text(searchText.isEmpty ? "Your meeting recordings will appear here." : "Try a different search.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -103,10 +155,45 @@ struct ContentView: View {
                 .listStyle(.sidebar)
                 .searchable(text: $searchText, prompt: "Search meetings")
                 .onDeleteCommand {
-                    guard model.captureState == .idle,
-                          let id = model.selectedMeetingID,
-                          let meeting = library.meetings.first(where: { $0.id == id }) else { return }
-                    meetingPendingDeletion = meeting
+                    if isSelectingMeetings, !selectedMeetingIDs.isEmpty {
+                        showBulkDeleteConfirmation = true
+                    } else {
+                        guard model.captureState == .idle,
+                              let id = model.selectedMeetingID,
+                              let meeting = library.meetings.first(where: { $0.id == id }) else { return }
+                        meetingPendingDeletion = meeting
+                    }
+                }
+
+                if isSelectingMeetings {
+                    HStack(spacing: 10) {
+                        Button(selectAllButtonTitle) {
+                            toggleSelectAllVisibleMeetings()
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(selectableFilteredMeetings.isEmpty)
+                        .help(searchText.isEmpty ? "Select every recording" : "Select every matching recording")
+
+                        Spacer()
+
+                        Text("\(selectedMeetingIDs.count) selected")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button(role: .destructive) {
+                            showBulkDeleteConfirmation = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .disabled(selectedMeetingIDs.isEmpty || model.captureState != .idle)
+                    }
+                    .controlSize(.small)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
                 Button {
@@ -194,6 +281,18 @@ struct ContentView: View {
         } message: { meeting in
             Text("“\(meeting.title)” and its audio, video, and transcript will be moved together. You can recover it from macOS Trash.")
         }
+        .confirmationDialog(
+            "Move \(selectedMeetingIDs.count) recordings to Trash?",
+            isPresented: $showBulkDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Move \(selectedMeetingIDs.count) to Trash", role: .destructive) {
+                deleteSelectedMeetings()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each selected recording and its audio, video, and transcript will be moved together. You can recover them from macOS Trash.")
+        }
     }
 
     private var calendarGroups: [RecordingMonthGroup] {
@@ -213,6 +312,55 @@ struct ContentView: View {
                 )
             }
             return RecordingMonthGroup(date: monthDate, days: days)
+        }
+    }
+
+    private var selectedMeetings: [MeetingRecord] {
+        library.meetings.filter { selectedMeetingIDs.contains($0.id) }
+    }
+
+    private var selectableFilteredMeetings: [MeetingRecord] {
+        filteredMeetings.filter { $0.transcriptionStatus != .processing }
+    }
+
+    private var allVisibleMeetingsSelected: Bool {
+        !selectableFilteredMeetings.isEmpty
+            && selectableFilteredMeetings.allSatisfy { selectedMeetingIDs.contains($0.id) }
+    }
+
+    private var selectAllButtonTitle: String {
+        if allVisibleMeetingsSelected { return "Clear" }
+        return searchText.isEmpty ? "Select All" : "Select Results"
+    }
+
+    private func toggleMeetingSelection(_ meeting: MeetingRecord) {
+        guard meeting.transcriptionStatus != .processing else { return }
+        if selectedMeetingIDs.contains(meeting.id) {
+            selectedMeetingIDs.remove(meeting.id)
+        } else {
+            selectedMeetingIDs.insert(meeting.id)
+        }
+    }
+
+    private func toggleSelectAllVisibleMeetings() {
+        if allVisibleMeetingsSelected {
+            selectedMeetingIDs.removeAll()
+        } else {
+            selectedMeetingIDs.formUnion(selectableFilteredMeetings.map(\.id))
+        }
+    }
+
+    private func deleteSelectedMeetings() {
+        let movedIDs = model.moveToTrash(selectedMeetings)
+        selectedMeetingIDs.subtract(movedIDs)
+        showBulkDeleteConfirmation = false
+        if selectedMeetingIDs.isEmpty { endMeetingSelection() }
+    }
+
+    private func endMeetingSelection() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isSelectingMeetings = false
+            selectedMeetingIDs.removeAll()
         }
     }
 }
@@ -273,7 +421,7 @@ private struct ActiveRecordingView: View {
             }
 
             VStack(spacing: 8) {
-                Text("Recording Zoom")
+                Text("Recording meeting")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                 if let capture = model.activeCapture {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -287,7 +435,7 @@ private struct ActiveRecordingView: View {
             }
 
             HStack(spacing: 12) {
-                CaptureTile(icon: "video.fill", title: "Zoom video", isAvailable: true)
+                CaptureTile(icon: "video.fill", title: "Meeting video", isAvailable: true)
                 CaptureTile(icon: "waveform", title: "Meeting audio", isAvailable: true)
                 CaptureTile(icon: "mic.fill", title: "Your voice", isAvailable: model.permissions.microphone)
                 CaptureTile(icon: "text.quote", title: "Transcript", isAvailable: model.permissions.speechRecognition)
@@ -343,10 +491,18 @@ private struct CaptureTile: View {
 private struct MeetingRow: View {
     let meeting: MeetingRecord
     let isSelected: Bool
+    let isSelectionMode: Bool
+    let isBulkSelected: Bool
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
+            if isSelectionMode {
+                Image(systemName: isBulkSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isBulkSelected ? Color.indigo : Color.secondary)
+                    .accessibilityHidden(true)
+            }
             ZStack {
                 RoundedRectangle(cornerRadius: 9)
                     .fill(Color.indigo.opacity(0.12))
@@ -373,14 +529,16 @@ private struct MeetingRow: View {
                 .foregroundStyle(meeting.transcriptionStatus == .failed ? .red : .secondary)
             }
             Spacer(minLength: 4)
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
+            if !isSelectionMode {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Move this recording to Trash")
+                .disabled(meeting.transcriptionStatus == .processing)
             }
-            .buttonStyle(.plain)
-            .help("Move this recording to Trash")
-            .disabled(meeting.transcriptionStatus == .processing)
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 7)
@@ -394,6 +552,8 @@ private struct MeetingRow: View {
         }
         .scaleEffect(isSelected ? 1 : 0.985)
         .animation(.easeInOut(duration: 0.18), value: isSelected)
+        .accessibilityLabel(meeting.title)
+        .accessibilityValue(isSelectionMode ? (isBulkSelected ? "Selected" : "Not selected") : "")
     }
 
     private var durationText: String {
@@ -463,7 +623,7 @@ private struct SidebarRecorderCard: View {
                 Spacer()
             }
 
-            Toggle("Record Zoom automatically", isOn: $settings.autoRecord)
+            Toggle("Record meetings automatically", isOn: $settings.autoRecord)
                 .font(.caption)
         }
         .padding(12)
@@ -477,7 +637,7 @@ private struct SidebarRecorderCard: View {
     }
 
     private var statusTitle: String {
-        if model.captureState == .recording { return "Recording Zoom" }
+        if model.captureState == .recording { return "Recording meeting" }
         if !model.permissions.screenRecording {
             return "Automatic recording is paused"
         }
@@ -489,7 +649,7 @@ private struct SidebarRecorderCard: View {
         if !model.permissions.screenRecording {
             return "Open Home to finish setup"
         }
-        return model.zoomState.label
+        return model.meetingState.label
     }
 }
 
@@ -505,7 +665,7 @@ private struct HomeDashboardView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Your meetings, remembered.")
                             .font(.system(size: 32, weight: .bold, design: .rounded))
-                        Text("Automatically save Zoom video, audio, and transcripts—all organized on this Mac.")
+                        Text("Automatically save meeting video, audio, and transcripts from Zoom, Google Meet, Teams, Webex, and other calling apps.")
                             .font(.title3)
                             .foregroundStyle(.secondary)
                     }
@@ -514,7 +674,7 @@ private struct HomeDashboardView: View {
                 RecorderHeroCard()
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-                    FeatureCard(icon: "video.fill", title: "Video and full audio", detail: "Zoom video and meeting audio")
+                    FeatureCard(icon: "video.fill", title: "Video and full audio", detail: "Meeting video and complete system audio")
                     FeatureCard(icon: "text.quote", title: "Searchable transcript", detail: "Find exactly what was said")
                     FeatureCard(icon: "calendar", title: "Easy to revisit", detail: "Organized by month and day")
                 }
@@ -622,9 +782,9 @@ private struct RecorderHeroCard: View {
         case nil:
             break
         }
-        return model.zoomState == .inMeeting
-            ? "Zoom meeting detected. Recording will start automatically."
-            : "MeetMemento is monitoring Zoom in the background."
+        return model.meetingState == .inMeeting
+            ? "\(model.detectedMeetingTarget?.displayName ?? "Meeting") detected. Recording will start automatically."
+            : "MeetMemento is monitoring supported meeting apps in the background."
     }
 }
 

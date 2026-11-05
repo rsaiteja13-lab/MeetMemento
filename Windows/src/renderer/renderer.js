@@ -10,14 +10,17 @@ const elements = Object.fromEntries([
   'audioUnavailable', 'openMeetingFolder', 'transcriptBadge', 'transcriptContent', 'setupAutoRecord',
   'setupMicrophone', 'setupLogin', 'setupConsent', 'setupProgress', 'finishSetup', 'settingsDialog',
   'autoRecordSetting', 'microphoneSetting', 'loginSetting', 'openRecordingsFolder', 'checkSpeech',
-  'speechStatus', 'captureCanvas', 'captureSourceVideo', 'homeButton'
+  'speechStatus', 'captureCanvas', 'captureSourceVideo', 'homeButton', 'selectMeetings',
+  'bulkMeetingActions', 'selectAllMeetings', 'selectedMeetingCount', 'deleteSelectedMeetings'
 ].map((id) => [id, document.getElementById(id)]));
 
 const viewState = {
-  app: { captureState: 'ready', zoomState: 'not-running', statusMessage: null },
+  app: { captureState: 'ready', meetingState: 'not-running', statusMessage: null },
   settings: null,
   meetings: [],
   selectedId: null,
+  selectionMode: false,
+  selectedIds: new Set(),
   renderingMeeting: 0
 };
 
@@ -65,15 +68,15 @@ function selectedMeeting() {
 }
 
 function statusCopy() {
-  const { captureState, zoomState } = viewState.app;
-  if (captureState === 'recording') return ['Recording Zoom', 'Video and complete meeting audio are being saved.', 'Stop and save', 'recording'];
-  if (captureState === 'starting') return ['Starting recording…', 'Connecting to the active Zoom meeting.', 'Starting…', 'waiting'];
+  const { captureState, meetingState } = viewState.app;
+  if (captureState === 'recording') return ['Recording meeting', 'Video, clean meeting audio, microphone, and transcript audio are being saved.', 'Stop and save', 'recording'];
+  if (captureState === 'starting') return ['Starting recording…', 'Connecting to the active meeting window.', 'Starting…', 'waiting'];
   if (captureState === 'stopping') return ['Saving recording…', 'Finishing the video and audio files safely.', 'Saving…', 'waiting'];
   if (captureState === 'transcribing') return ['Creating transcript…', 'Your audio and video are already saved.', 'Working…', 'waiting'];
   if (captureState === 'failed') return ['Recording needs attention', viewState.app.statusMessage || 'Open MeetMemento to review the issue.', 'Try again', 'waiting'];
-  if (zoomState === 'in-meeting') return ['Zoom meeting found', 'Automatic recording will begin in a moment.', 'Record Zoom now', 'waiting'];
-  if (zoomState === 'open') return ['Zoom is open', 'Join a meeting and recording will start automatically.', 'Record Zoom now', ''];
-  return ['Ready for Zoom', 'MeetMemento is watching for your next Zoom meeting.', 'Record Zoom now', ''];
+  if (meetingState === 'in-meeting') return ['Meeting found', 'Automatic recording will begin in a moment.', 'Record meeting now', 'waiting'];
+  if (meetingState === 'open') return ['Meeting app is open', 'Join a call and recording will start automatically.', 'Record meeting now', ''];
+  return ['Ready for meetings', 'Watching Zoom, Google Meet, Teams, Webex, and other calling apps.', 'Record meeting now', ''];
 }
 
 function renderCaptureStatus() {
@@ -95,6 +98,54 @@ function requestDelete(meeting) {
   api.deleteMeeting(meeting.id).then(refreshLibrary).catch(showError);
 }
 
+function selectableMeetings() {
+  return viewState.meetings.filter((meeting) => meeting.transcriptionStatus !== 'processing');
+}
+
+function renderBulkMeetingActions() {
+  const selectable = selectableMeetings();
+  const allSelected = selectable.length > 0
+    && selectable.every((meeting) => viewState.selectedIds.has(meeting.id));
+  elements.selectMeetings.textContent = viewState.selectionMode ? 'Done' : 'Select';
+  elements.bulkMeetingActions.hidden = !viewState.selectionMode;
+  elements.selectAllMeetings.textContent = allSelected ? 'Clear' : 'Select all';
+  elements.selectAllMeetings.disabled = selectable.length === 0;
+  elements.selectedMeetingCount.textContent = `${viewState.selectedIds.size} selected`;
+  elements.deleteSelectedMeetings.disabled = viewState.selectedIds.size === 0;
+}
+
+function endMeetingSelection() {
+  viewState.selectionMode = false;
+  viewState.selectedIds.clear();
+  renderMeetingList();
+}
+
+function toggleMeetingSelection(meeting) {
+  if (meeting.transcriptionStatus === 'processing') return;
+  if (viewState.selectedIds.has(meeting.id)) viewState.selectedIds.delete(meeting.id);
+  else viewState.selectedIds.add(meeting.id);
+  renderMeetingList();
+}
+
+async function requestBulkDelete() {
+  const meetings = viewState.meetings.filter((meeting) => viewState.selectedIds.has(meeting.id));
+  if (meetings.length === 0) return;
+  const accepted = window.confirm(`Move ${meetings.length} recordings to the Recycle Bin? You can restore them from Recently Deleted.`);
+  if (!accepted) return;
+  try {
+    const result = await api.deleteMeetings(meetings.map((meeting) => meeting.id));
+    for (const id of result.movedIds || []) viewState.selectedIds.delete(id);
+    viewState.app.statusMessage = result.failures?.length
+      ? `${result.movedIds?.length || 0} recordings moved; ${result.failures.length} could not be moved.`
+      : `${result.movedIds?.length || 0} recordings moved to the Recycle Bin.`;
+    if (viewState.selectedIds.size === 0) viewState.selectionMode = false;
+    renderCaptureStatus();
+    await refreshLibrary();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function renderMeetingList() {
   elements.meetingCount.textContent = String(viewState.meetings.length);
   elements.meetingList.replaceChildren();
@@ -111,18 +162,25 @@ function renderMeetingList() {
     }
 
     const row = document.createElement('div');
-    row.className = `meeting-row${meeting.id === viewState.selectedId ? ' active' : ''}`;
+    const bulkSelected = viewState.selectedIds.has(meeting.id);
+    const selectionDisabled = viewState.selectionMode && meeting.transcriptionStatus === 'processing';
+    row.className = `meeting-row${!viewState.selectionMode && meeting.id === viewState.selectedId ? ' active' : ''}${bulkSelected ? ' bulk-selected' : ''}${selectionDisabled ? ' selection-disabled' : ''}`;
     row.tabIndex = 0;
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `Open ${meeting.title}`);
+    row.setAttribute('role', viewState.selectionMode ? 'checkbox' : 'button');
+    row.setAttribute('aria-label', viewState.selectionMode ? `Select ${meeting.title}` : `Open ${meeting.title}`);
+    if (viewState.selectionMode) row.setAttribute('aria-checked', String(bulkSelected));
     row.innerHTML = `
       <span class="meeting-thumb" aria-hidden="true">▰</span>
       <span class="meeting-copy">
         <span class="meeting-name">${escapeHtml(meeting.title)}</span>
         <span class="meeting-time">${escapeHtml(formatMeetingTime(meeting))}</span>
       </span>
-      <button class="quick-delete" type="button" title="Move to Recycle Bin" aria-label="Delete ${escapeHtml(meeting.title)}">×</button>`;
-    const select = () => selectMeeting(meeting.id);
+      ${viewState.selectionMode
+        ? `<span class="selection-check" aria-hidden="true">✓</span>`
+        : `<button class="quick-delete" type="button" title="Move to Recycle Bin" aria-label="Delete ${escapeHtml(meeting.title)}">×</button>`}`;
+    const select = () => viewState.selectionMode
+      ? toggleMeetingSelection(meeting)
+      : selectMeeting(meeting.id);
     row.addEventListener('click', (event) => {
       if (!event.target.closest('.quick-delete')) select();
     });
@@ -132,12 +190,13 @@ function renderMeetingList() {
         select();
       }
     });
-    row.querySelector('.quick-delete').addEventListener('click', (event) => {
-      event.stopPropagation();
-      requestDelete(meeting);
-    });
+    row.querySelector('.quick-delete')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        requestDelete(meeting);
+      });
     elements.meetingList.append(row);
   }
+  renderBulkMeetingActions();
 }
 
 async function selectMeeting(id) {
@@ -160,7 +219,7 @@ async function renderMeetingDetail() {
   elements.meetingActions.hidden = !meeting;
   if (!meeting) {
     elements.meetingTitle.textContent = 'Your recordings will appear here';
-    elements.meetingMeta.textContent = 'Join a Zoom meeting and MeetMemento will begin automatically.';
+    elements.meetingMeta.textContent = 'Join a meeting and MeetMemento will begin automatically.';
     return;
   }
 
@@ -204,6 +263,10 @@ async function renderMeetingDetail() {
 async function refreshLibrary() {
   const meetings = await api.listMeetings();
   viewState.meetings = meetings;
+  const availableIds = new Set(meetings.map((meeting) => meeting.id));
+  for (const id of viewState.selectedIds) {
+    if (!availableIds.has(id)) viewState.selectedIds.delete(id);
+  }
   if (viewState.selectedId && !meetings.some((meeting) => meeting.id === viewState.selectedId)) {
     viewState.selectedId = meetings[0]?.id || null;
   } else if (!viewState.selectedId && meetings.length > 0) {
@@ -233,6 +296,7 @@ class CaptureController {
     this.microphoneStream = null;
     this.audioContext = null;
     this.mixBus = null;
+    this.playbackBus = null;
     this.mediaDestination = null;
     this.systemAudioSource = null;
     this.systemAnalyser = null;
@@ -244,6 +308,7 @@ class CaptureController {
     this.canvasStream = null;
     this.videoRecorder = null;
     this.audioRecorder = null;
+    this.microphoneRecorder = null;
     this.sessionId = null;
     this.startedAt = null;
     this.appendQueue = Promise.resolve();
@@ -254,6 +319,8 @@ class CaptureController {
     this.audioPeak = 0;
     this.systemAudioPeak = 0;
     this.hadSystemAudioTrack = false;
+    this.currentSystemAudioAvailable = false;
+    this.microphoneFeedsPlayback = false;
     this.currentSource = null;
     this.sourceReplaceQueue = Promise.resolve();
     this.deviceChangeTimer = null;
@@ -284,15 +351,15 @@ class CaptureController {
     const video = elements.captureSourceVideo;
     video.srcObject = stream;
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Zoom video did not become available.')), 10000);
+      const timeout = setTimeout(() => reject(new Error('Meeting video did not become available.')), 10000);
       video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
-      video.onerror = () => { clearTimeout(timeout); reject(new Error('Zoom video could not be opened.')); };
+      video.onerror = () => { clearTimeout(timeout); reject(new Error('Meeting video could not be opened.')); };
     });
     await video.play();
     const displayTrack = stream.getVideoTracks()[0];
-    if (!displayTrack) throw new Error('Windows did not provide the Zoom video stream.');
+    if (!displayTrack) throw new Error('Windows did not provide the meeting video stream.');
     displayTrack.addEventListener('ended', () => {
-      if (this.active && !this.stopping) this.warnings.push('Zoom briefly changed or closed its capture window.');
+      if (this.active && !this.stopping) this.warnings.push('The meeting app briefly changed or closed its capture window.');
     }, { once: true });
     this.connectSystemAudio(stream);
   }
@@ -305,16 +372,20 @@ class CaptureController {
       this.systemSamples = null;
     }
     const tracks = stream.getAudioTracks();
+    this.currentSystemAudioAvailable = tracks.length > 0;
     if (tracks.length === 0) {
       this.warnings.push('Windows loopback audio was unavailable for part of this meeting.');
+      this.connectMicrophoneToPlaybackIfNeeded();
       return;
     }
     this.hadSystemAudioTrack = true;
+    this.disconnectMicrophoneFromPlayback();
     this.systemAudioSource = this.audioContext.createMediaStreamSource(new MediaStream(tracks));
     this.systemAnalyser = this.audioContext.createAnalyser();
     this.systemAnalyser.fftSize = 1024;
     this.systemSamples = new Float32Array(this.systemAnalyser.fftSize);
     this.systemAudioSource.connect(this.mixBus);
+    this.systemAudioSource.connect(this.playbackBus);
     this.systemAudioSource.connect(this.systemAnalyser);
   }
 
@@ -346,12 +417,14 @@ class CaptureController {
   configureAudio() {
     this.audioContext = new AudioContext({ latencyHint: 'playback' });
     this.mixBus = this.audioContext.createGain();
+    this.playbackBus = this.audioContext.createGain();
     this.mediaDestination = this.audioContext.createMediaStreamDestination();
-    this.mixBus.connect(this.mediaDestination);
+    this.playbackBus.connect(this.mediaDestination);
 
     this.silentSource = this.audioContext.createConstantSource();
     this.silentSource.offset.value = 0;
     this.silentSource.connect(this.mixBus);
+    this.silentSource.connect(this.playbackBus);
     this.silentSource.start();
 
     this.processor = this.audioContext.createScriptProcessor(4096, 2, 1);
@@ -368,18 +441,34 @@ class CaptureController {
     try {
       const next = await navigator.mediaDevices.getUserMedia({
         video: false,
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        // Windows/Chromium can remove speaker playback from the microphone
+        // before it reaches the transcript and the separately saved mic track.
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
       if (this.microphoneSource) {
         try { this.microphoneSource.disconnect(); } catch { /* already disconnected */ }
+        this.microphoneFeedsPlayback = false;
       }
       this.microphoneStream?.getTracks().forEach((track) => track.stop());
       this.microphoneStream = next;
       this.microphoneSource = this.audioContext.createMediaStreamSource(next);
       this.microphoneSource.connect(this.mixBus);
+      this.connectMicrophoneToPlaybackIfNeeded();
     } catch (error) {
       if (reportFailure) this.warnings.push(`Microphone was not included: ${error.message}`);
     }
+  }
+
+  connectMicrophoneToPlaybackIfNeeded() {
+    if (!this.microphoneSource || this.currentSystemAudioAvailable || this.microphoneFeedsPlayback) return;
+    this.microphoneSource.connect(this.playbackBus);
+    this.microphoneFeedsPlayback = true;
+  }
+
+  disconnectMicrophoneFromPlayback() {
+    if (!this.microphoneSource || !this.microphoneFeedsPlayback) return;
+    try { this.microphoneSource.disconnect(this.playbackBus); } catch { /* already disconnected */ }
+    this.microphoneFeedsPlayback = false;
   }
 
   async reopenMicrophone() {
@@ -430,11 +519,12 @@ class CaptureController {
     const recorder = new MediaRecorder(stream, options);
     recorder.addEventListener('dataavailable', (event) => {
       if (!event.data || event.data.size === 0 || !this.sessionId) return;
+      const sessionId = this.sessionId;
       if (kind === 'video') this.lastVideoChunkAt = Date.now();
       if (kind === 'audio') this.lastAudioChunkAt = Date.now();
       this.appendQueue = this.appendQueue.then(async () => {
         const data = await event.data.arrayBuffer();
-        await api.appendChunk(this.sessionId, kind, data);
+        await api.appendChunk(sessionId, kind, data);
       });
     });
     recorder.addEventListener('error', (event) => {
@@ -453,6 +543,8 @@ class CaptureController {
     this.audioPeak = 0;
     this.systemAudioPeak = 0;
     this.hadSystemAudioTrack = false;
+    this.currentSystemAudioAvailable = false;
+    this.microphoneFeedsPlayback = false;
     this.startedAt = new Date();
     this.currentSource = payload.source;
     try {
@@ -491,6 +583,14 @@ class CaptureController {
         ...(audioMime ? { mimeType: audioMime } : {}),
         audioBitsPerSecond: 128000
       });
+      const microphoneTracks = this.microphoneStream?.getAudioTracks() || [];
+      if (microphoneTracks.length > 0) {
+        this.microphoneRecorder = this.recordStream(
+          new MediaStream(microphoneTracks),
+          'microphone',
+          { ...(audioMime ? { mimeType: audioMime } : {}), audioBitsPerSecond: 96000 }
+        );
+      }
       this.lastVideoChunkAt = Date.now();
       this.lastAudioChunkAt = Date.now();
       this.healthTimer = setInterval(() => this.checkCaptureHealth(), 5000);
@@ -518,7 +618,11 @@ class CaptureController {
     this.failing = true;
     this.stopping = true;
     try {
-      await Promise.all([this.stopRecorder(this.videoRecorder), this.stopRecorder(this.audioRecorder)]);
+      await Promise.all([
+        this.stopRecorder(this.videoRecorder),
+        this.stopRecorder(this.audioRecorder),
+        this.stopRecorder(this.microphoneRecorder)
+      ]);
       this.flushPcm();
       await withTimeout(this.appendQueue, 8000, 'Pending recording data did not finish writing.');
     } catch (error) {
@@ -561,9 +665,9 @@ class CaptureController {
       if (previous) {
         elements.captureSourceVideo.srcObject = previous;
         this.connectSystemAudio(previous);
-        try { await elements.captureSourceVideo.play(); } catch { /* the next Zoom detection will retry */ }
+        try { await elements.captureSourceVideo.play(); } catch { /* the next meeting detection will retry */ }
       }
-      this.warnings.push(`Zoom changed windows, but the new window could not be attached: ${error.message}`);
+      this.warnings.push(`The meeting app changed windows, but the new window could not be attached: ${error.message}`);
     }
   }
 
@@ -584,14 +688,18 @@ class CaptureController {
     if (!this.active || this.stopping) return;
     this.stopping = true;
     try {
-      await Promise.all([this.stopRecorder(this.videoRecorder), this.stopRecorder(this.audioRecorder)]);
+      await Promise.all([
+        this.stopRecorder(this.videoRecorder),
+        this.stopRecorder(this.audioRecorder),
+        this.stopRecorder(this.microphoneRecorder)
+      ]);
       this.flushPcm();
       await this.appendQueue;
       const durationSeconds = this.startedAt ? (Date.now() - this.startedAt.getTime()) / 1000 : 0;
       if (durationSeconds >= 5 && this.audioPeak < 0.001) {
         this.warnings.push('No audible signal was detected in the saved audio.');
       } else if (durationSeconds >= 10 && this.hadSystemAudioTrack && this.systemAudioPeak < 0.0005) {
-        this.warnings.push('Windows provided a system-audio track, but no audible Zoom output was detected.');
+        this.warnings.push('Windows provided a system-audio track, but no audible meeting output was detected.');
       }
       const sessionId = this.sessionId;
       const details = {
@@ -627,6 +735,7 @@ class CaptureController {
     try { this.processor?.disconnect(); } catch { /* no-op */ }
     try { this.processorMute?.disconnect(); } catch { /* no-op */ }
     try { this.mixBus?.disconnect(); } catch { /* no-op */ }
+    try { this.playbackBus?.disconnect(); } catch { /* no-op */ }
     try { this.silentSource?.stop(); } catch { /* no-op */ }
     for (const stream of [this.displayStream, this.microphoneStream, this.canvasStream]) {
       stream?.getTracks().forEach((track) => track.stop());
@@ -638,6 +747,10 @@ class CaptureController {
     this.microphoneStream = null;
     this.canvasStream = null;
     this.audioContext = null;
+    this.playbackBus = null;
+    this.microphoneRecorder = null;
+    this.currentSystemAudioAvailable = false;
+    this.microphoneFeedsPlayback = false;
     this.currentSource = null;
   }
 }
@@ -730,6 +843,22 @@ elements.captureButton.addEventListener('click', () => {
   else api.startManualRecording().catch(showError);
 });
 elements.homeButton.addEventListener('click', () => showHome().catch(showError));
+elements.selectMeetings.addEventListener('click', () => {
+  if (viewState.selectionMode) endMeetingSelection();
+  else {
+    viewState.selectionMode = true;
+    renderMeetingList();
+  }
+});
+elements.selectAllMeetings.addEventListener('click', () => {
+  const selectable = selectableMeetings();
+  const allSelected = selectable.length > 0
+    && selectable.every((meeting) => viewState.selectedIds.has(meeting.id));
+  viewState.selectedIds.clear();
+  if (!allSelected) selectable.forEach((meeting) => viewState.selectedIds.add(meeting.id));
+  renderMeetingList();
+});
+elements.deleteSelectedMeetings.addEventListener('click', () => requestBulkDelete());
 elements.emptyRecordButton.addEventListener('click', () => api.startManualRecording().catch(showError));
 elements.openRecycleBin.addEventListener('click', () => api.openRecycleBin());
 elements.openSettings.addEventListener('click', () => elements.settingsDialog.showModal());
@@ -758,7 +887,7 @@ elements.exportMeeting.addEventListener('click', async () => {
   if (!meeting) return;
   const destination = await api.exportMeeting(meeting.id);
   if (destination) {
-    viewState.app.statusMessage = `Video, audio, and transcript copied to ${destination}`;
+    viewState.app.statusMessage = `Available video, meeting audio, microphone, and transcript files copied to ${destination}`;
     renderCaptureStatus();
   }
 });
@@ -775,6 +904,11 @@ for (const element of [elements.videoPlayer, elements.videoUnavailable]) {
     elements.detailPane.scrollBy({ top: event.deltaY || event.deltaX, behavior: 'auto' });
   }, { passive: false });
 }
+
+// The saved video already contains the clean meeting-audio track. Never let the
+// separate audio-only player run at the same time or the user hears two copies.
+elements.videoPlayer.addEventListener('play', () => elements.audioPlayer.pause());
+elements.audioPlayer.addEventListener('play', () => elements.videoPlayer.pause());
 
 if (api) {
   api.rendererHeartbeat();

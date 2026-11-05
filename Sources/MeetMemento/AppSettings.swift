@@ -17,7 +17,8 @@ final class AppSettings: ObservableObject {
         static let guardianRegistrationVersion = "guardianRegistrationVersionV1"
         static let captureStartupRecoveryWindowStartedAt = "captureStartupRecoveryWindowStartedAtV1"
         static let captureStartupRecoveryCount = "captureStartupRecoveryCountV1"
-        static let captureStartupSuppressedUntilZoomEnds = "captureStartupSuppressedUntilZoomEndsV1"
+        // Keep the existing key so upgrades preserve in-progress recovery state.
+        static let captureStartupSuppressedUntilMeetingEnds = "captureStartupSuppressedUntilZoomEndsV1"
     }
 
     @Published var autoRecord: Bool {
@@ -90,13 +91,13 @@ final class AppSettings: ObservableObject {
         defaults.set(currentBuildVersion, forKey: Key.screenPermissionRelaunchVersion)
     }
 
-    var captureStartupSuppressedUntilZoomEnds: Bool {
-        get { defaults.bool(forKey: Key.captureStartupSuppressedUntilZoomEnds) }
-        set { defaults.set(newValue, forKey: Key.captureStartupSuppressedUntilZoomEnds) }
+    var captureStartupSuppressedUntilMeetingEnds: Bool {
+        get { defaults.bool(forKey: Key.captureStartupSuppressedUntilMeetingEnds) }
+        set { defaults.set(newValue, forKey: Key.captureStartupSuppressedUntilMeetingEnds) }
     }
 
     /// Allows two automatic restarts in one five-minute window. A persistent
-    /// macOS capture-service failure is then contained to the current Zoom call
+    /// macOS capture-service failure is then contained to the current call
     /// instead of creating an endless relaunch loop.
     func registerCaptureStartupRecoveryAttempt(now: Date = Date()) -> Bool {
         let windowLength: TimeInterval = 5 * 60
@@ -121,7 +122,7 @@ final class AppSettings: ObservableObject {
     func clearCaptureStartupRecoveryState() {
         defaults.removeObject(forKey: Key.captureStartupRecoveryWindowStartedAt)
         defaults.removeObject(forKey: Key.captureStartupRecoveryCount)
-        captureStartupSuppressedUntilZoomEnds = false
+        captureStartupSuppressedUntilMeetingEnds = false
     }
 
     private var currentBuildVersion: String {

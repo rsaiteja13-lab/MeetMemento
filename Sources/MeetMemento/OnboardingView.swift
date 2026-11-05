@@ -15,14 +15,14 @@ struct OnboardingView: View {
             VStack(spacing: 9) {
                 Text("Welcome to MeetMemento")
                     .font(.largeTitle.bold())
-                Text("Automatically save your Zoom video, full meeting audio, and a searchable transcript.")
+                Text("Automatically save meeting video, full audio, and a searchable transcript from Zoom, Google Meet, Teams, Webex, and other calling apps.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             VStack(alignment: .leading, spacing: 14) {
-                PermissionExplanation(icon: "rectangle.inset.filled.and.person.filled", title: "Zoom video and audio", detail: "Captures the Zoom screen and meeting audio whether you use speakers, AirPods, or another headset.")
+                PermissionExplanation(icon: "rectangle.inset.filled.and.person.filled", title: "Meeting video and audio", detail: "Captures the active meeting window and system audio whether you use speakers, AirPods, or another headset.")
                 PermissionExplanation(icon: "mic.fill", title: "Your voice", detail: "Includes your side of the conversation and follows the microphone you’re currently using.")
                 PermissionExplanation(icon: "text.quote", title: "Searchable transcript", detail: "Turns the saved audio into a transcript. Your recording stays on this Mac.")
             }

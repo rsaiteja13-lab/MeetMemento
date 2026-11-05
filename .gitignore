@@ -2,6 +2,7 @@
 Dist/
 .DS_Store
 .swiftpm/
+.pnpm-store/
 *.xcuserstate
 xcuserdata/
 

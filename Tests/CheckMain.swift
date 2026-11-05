@@ -45,6 +45,9 @@ struct MeetMementoChecks {
             bundleIdentifier: "us.zoom.caphost",
             localizedName: "caphost"
         ))
+        precondition(!MeetingSignalClassifier.isVisibleMeetingHelperWindow(isOnScreen: false, alpha: 1))
+        precondition(!MeetingSignalClassifier.isVisibleMeetingHelperWindow(isOnScreen: true, alpha: 0))
+        precondition(MeetingSignalClassifier.isVisibleMeetingHelperWindow(isOnScreen: true, alpha: 1))
         precondition(ZoomSignalClassifier.isMeetingWindowTitle("Zoom Webinar"))
         precondition(!ZoomSignalClassifier.isMeetingWindowTitle("Zoom Workplace"))
         precondition(ZoomSignalClassifier.isMeetingWindow(
@@ -68,6 +71,36 @@ struct MeetMementoChecks {
             width: 800,
             height: 600
         ))
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.google.Chrome",
+            localizedName: "Google Chrome",
+            title: "Product review - Google Meet"
+        )?.provider == .googleMeet)
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.microsoft.teams2",
+            localizedName: "Microsoft Teams",
+            title: "Weekly planning | Microsoft Teams meeting"
+        )?.provider == .microsoftTeams)
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.cisco.webexmeetingsapp",
+            localizedName: "Webex",
+            title: "Customer call - Webex Meeting"
+        )?.provider == .webex)
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.google.Chrome",
+            localizedName: "Google Chrome",
+            title: "Meeting notes - Google Docs"
+        ) == nil)
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.microsoft.teams2",
+            localizedName: "Microsoft Teams",
+            title: "Microsoft Teams"
+        ) == nil)
+        precondition(MeetingSignalClassifier.windowMatch(
+            bundleIdentifier: "com.example.newcallingapp",
+            localizedName: "New Calling App",
+            title: "Video call with Priya"
+        )?.provider == .other)
 
         let noAccess = PermissionSnapshot()
         precondition(noAccess.firstMissingRequiredPermission(includeMicrophone: true) == .screenRecording)
@@ -79,6 +112,13 @@ struct MeetMementoChecks {
         precondition(!CaptureStartupRecoveryPolicy.shouldRecover(state: .starting, elapsed: 19.9))
         precondition(CaptureStartupRecoveryPolicy.shouldRecover(state: .starting, elapsed: 20))
         precondition(!CaptureStartupRecoveryPolicy.shouldRecover(state: .recording, elapsed: 60))
+        precondition(!MeetingLifecyclePolicy.shouldStart(after: 1))
+        precondition(MeetingLifecyclePolicy.shouldStart(after: 2))
+        precondition(!MeetingLifecyclePolicy.shouldStop(after: 8))
+        precondition(!MeetingLifecyclePolicy.shouldStop(after: 19))
+        precondition(MeetingLifecyclePolicy.shouldStop(after: 20))
+        precondition(!MeetingLifecyclePolicy.hasConfirmedMeetingEnded(after: 11))
+        precondition(MeetingLifecyclePolicy.hasConfirmedMeetingEnded(after: 12))
         print("MeetMemento checks passed")
     }
 }

@@ -32,7 +32,11 @@ final class CalendarEventMatcher {
             .compactMap { $0 }
             .joined(separator: " ")
             .lowercased()
-        if searchable.contains("zoom") { value += 10 }
+        let meetingServiceKeywords = [
+            "zoom", "meet.google", "google meet", "teams.microsoft", "microsoft teams",
+            "webex", "slack", "ringcentral", "gotomeeting", "jitsi", "whereby"
+        ]
+        if meetingServiceKeywords.contains(where: searchable.contains) { value += 10 }
         value -= abs(event.startDate.timeIntervalSince(date)) / 60
         return value
     }

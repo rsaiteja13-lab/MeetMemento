@@ -85,7 +85,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         // AVAudioEngine can retain an input tap internally while macOS switches
         // devices, even after removeTap is called. Installing another tap on that
         // engine raises an Objective-C exception and terminates the whole app.
-        // A fresh engine has no retained tap and keeps Zoom video/system audio
+        // A fresh engine has no retained tap and keeps meeting video/system audio
         // recording even when AirPods or Bluetooth profiles change.
         tearDownEngine()
         do {

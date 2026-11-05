@@ -1,6 +1,6 @@
 # MeetMemento
 
-MeetMemento is a background app for macOS and Windows that detects Zoom meetings and preserves the Zoom screen, complete Zoom audio, your microphone, and a timestamped transcript locally.
+MeetMemento is a background app for macOS and Windows that detects calls in Zoom, Google Meet, Microsoft Teams, Webex, Slack Huddles, and other meeting apps. It preserves the meeting window, system audio, your microphone, and a timestamped transcript locally.
 
 > [!IMPORTANT]
 > MeetMemento is designed for consensual recording. Tell meeting participants that you are recording and follow the laws and workplace policies that apply to you.
@@ -9,9 +9,9 @@ MeetMemento is a background app for macOS and Windows that detects Zoom meetings
 
 1. Download the `x64.exe` installer for most Windows PCs or the `arm64.exe` installer for Windows on ARM.
 2. Open MeetMemento and complete its one-time setup. It checks automatic recording, microphone access, local transcript support, and launch at sign-in in one flow.
-3. Join Zoom normally. Closing the MeetMemento window leaves it ready in the Windows system tray.
+3. Join a supported meeting normally. Closing the MeetMemento window leaves it ready in the Windows system tray.
 
-Windows capture uses system-output loopback, so it continues to receive meeting audio when the user changes between speakers, USB devices, and Bluetooth headphones. The Windows app stores files under `Videos\MeetMemento\Recordings`. See [Windows installation and verification](Windows/README.md) for package details and the complete test checklist.
+Windows capture uses system-output loopback, so it continues to receive meeting audio when the user changes between speakers, USB devices, and Bluetooth headphones. It saves echo-reduced microphone audio separately and uses it for the transcript without layering it over the clean meeting playback. The Windows app stores files under `Videos\MeetMemento\Recordings`. See [Windows installation and verification](Windows/README.md) for package details and the complete test checklist.
 
 ## Install on macOS
 
@@ -38,16 +38,16 @@ The build script creates a universal app for both Apple silicon and Intel Macs. 
 
 ## What the macOS app does
 
-- Detects active Zoom meetings and webinars from real meeting windows, using newly launched Zoom meeting helpers only during the short window-startup grace period so stale helpers do not create false recordings.
-- Records Zoom's windows with an isolated H.264 writer, a monotonic meeting timeline, periodic still-frame keepalives, and automatic ScreenCaptureKit recovery so static or long meetings keep their full duration.
-- Captures system audio through a stream independent of Zoom's helper processes, before macOS sends it to speakers, AirPods, Bluetooth headsets, docks, or another output.
+- Detects active calls from real meeting windows in Zoom, Google Meet, Microsoft Teams, Webex, Slack Huddles, Discord, Skype, WhatsApp, FaceTime, RingCentral, GoTo, Jitsi, Whereby, and unfamiliar apps whose window has a clear live-call title.
+- Records the detected meeting window with an isolated H.264 writer, a monotonic meeting timeline, periodic still-frame keepalives, and automatic ScreenCaptureKit recovery so static or long meetings keep their full duration.
+- Captures system audio independently of the selected meeting app, before macOS sends it to speakers, AirPods, Bluetooth headsets, docks, or another output.
 - Captures the current default microphone as a second track, converts every input to one stable recording format, and reconnects when the input device changes.
 - Breaks long recordings into short transcription jobs and merges them into one timestamped transcript.
-- Combines Zoom output and your microphone into one full-meeting audio file when both are available.
+- Combines meeting output and your microphone into one full-meeting audio file when both are available.
 - Lets each meeting download its video, full audio, and transcript to a chosen folder.
-- Groups recordings by month and day, supports one-click deletion, and links to macOS Trash for recovery.
+- Groups recordings by month and day, supports one-click or multi-select deletion, and links to macOS Trash for recovery.
 - Uses a matching macOS Calendar event—including Outlook calendars connected to Calendar—as the meeting title when available, with transcript-based naming as a fallback.
-- Stores `zoom-screen.mp4`, `meeting-audio.m4a`, `my-microphone.caf`, `full-meeting-audio.m4a`, `transcript.txt`, and `metadata.json` together under `~/Library/Application Support/MeetMemento/Recordings` as applicable.
+- Stores `meeting-screen.mp4`, `meeting-audio.m4a`, `my-microphone.caf`, `full-meeting-audio.m4a`, `transcript.txt`, and `metadata.json` together under `~/Library/Application Support/MeetMemento/Recordings` as applicable. Existing `zoom-screen.mp4` recordings remain compatible.
 - Lives in the menu bar, launches silently at login, and uses a macOS-managed background guardian to restore the recorder if the visible app is quit. Capture startup also has an in-app watchdog plus an independent guardian fallback, and interrupted microphone audio is recovered instead of discarded. Turning off automatic recording remains the intentional way to pause capture. Its Dock icon appears while a MeetMemento window is open and hides again when all windows close.
 - Keeps a small rotating local diagnostics log so a missed detection or capture failure can be identified without touching meeting content.
 - Supports Apple silicon and Intel Macs running macOS 13 or later.
@@ -80,4 +80,4 @@ Audio and transcripts stay on the Mac. Speech recognition is requested from macO
 
 ## Current scope
 
-This is an MVP. It checks current Zoom meeting windows every second and uses recently launched `CptHost` and `zCCIMeetingHost` processes only as a brief window-startup fallback. Long-lived helpers such as `caphost`, or helpers left behind after a call, are not sufficient by themselves to trigger recording. A manual recording control is available if a future Zoom release changes those signals. Teams and other meeting apps, full-screen capture beyond the meeting app, action items, speaker diarization, cloud sync, and automatic deletion policies are future capabilities.
+This is an MVP. It checks visible meeting windows every second and uses provider-specific call signals to avoid recording home screens or ordinary browser pages. A Zoom helper process qualifies only while it owns a visible, nontransparent meeting window; launching a helper alone never starts a recording. Automatic capture also requires the same meeting window on consecutive checks, tolerates brief window replacements before stopping, and waits for a confirmed meeting end before another automatic start. An unfamiliar app can be detected automatically when its window clearly says it is a live call, and **Record meeting now** captures the most recent app window when no reliable automatic signal exists. No desktop operating system exposes a universal “user joined a meeting” event for every arbitrary app, so that manual fallback remains necessary for apps with ambiguous window titles. Summaries, action items, speaker diarization, cloud sync, and automatic deletion policies are outside the current scope.

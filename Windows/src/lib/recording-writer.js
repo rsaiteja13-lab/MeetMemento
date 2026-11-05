@@ -56,8 +56,9 @@ class RecordingWriter {
     const folderPath = path.join(this.recordingsRoot, folderName);
     fs.mkdirSync(folderPath, { recursive: false });
 
-    const videoPath = path.join(folderPath, 'zoom-screen.webm');
+    const videoPath = path.join(folderPath, 'meeting-screen.webm');
     const audioPath = path.join(folderPath, 'meeting-audio.webm');
+    const microphonePath = path.join(folderPath, 'my-microphone.webm');
     const wavPath = path.join(folderPath, 'transcription-input.wav');
     const id = crypto.randomUUID();
     writeJsonAtomic(path.join(folderPath, 'recording-session.json'), {
@@ -76,12 +77,15 @@ class RecordingWriter {
       folderPath,
       videoPath,
       audioPath,
+      microphonePath,
       wavPath,
       videoHandle: fs.openSync(videoPath, 'w'),
       audioHandle: fs.openSync(audioPath, 'w'),
+      microphoneHandle: fs.openSync(microphonePath, 'w'),
       wavHandle: fs.openSync(wavPath, 'w+'),
       videoBytes: 0,
       audioBytes: 0,
+      microphoneBytes: 0,
       pcmBytes: 0
     };
     fs.writeSync(session.wavHandle, wavHeader(0));
@@ -104,6 +108,9 @@ class RecordingWriter {
     } else if (kind === 'audio') {
       fs.writeSync(session.audioHandle, buffer);
       session.audioBytes += buffer.length;
+    } else if (kind === 'microphone') {
+      fs.writeSync(session.microphoneHandle, buffer);
+      session.microphoneBytes += buffer.length;
     } else {
       throw new Error(`Unsupported recording chunk: ${kind}`);
     }
@@ -127,7 +134,7 @@ class RecordingWriter {
     } catch (error) {
       finalizationFailures.push(`Transcript audio header: ${error.message}`);
     }
-    for (const handle of [session.videoHandle, session.audioHandle, session.wavHandle]) {
+    for (const handle of [session.videoHandle, session.audioHandle, session.microphoneHandle, session.wavHandle]) {
       try { fs.fsyncSync(handle); } catch (error) { finalizationFailures.push(`File flush: ${error.message}`); }
       try { fs.closeSync(handle); } catch (error) { finalizationFailures.push(`File close: ${error.message}`); }
     }
@@ -135,6 +142,8 @@ class RecordingWriter {
 
     const videoValid = safeSize(session.videoPath) > 1024;
     const audioValid = safeSize(session.audioPath) > 256;
+    const microphoneValid = safeSize(session.microphonePath) > 256;
+    if (!microphoneValid) fs.rmSync(session.microphonePath, { force: true });
     const speechInputValid = safeSize(session.wavPath) > WAV_HEADER_BYTES + 3200;
     const failures = [...warnings, ...finalizationFailures];
     if (!videoValid) failures.push('Video was not captured.');
@@ -150,6 +159,7 @@ class RecordingWriter {
       folderName: session.folderName,
       videoFile: videoValid ? path.basename(session.videoPath) : null,
       audioFile: audioValid ? path.basename(session.audioPath) : null,
+      microphoneFile: microphoneValid ? path.basename(session.microphonePath) : null,
       transcriptFile: null,
       transcriptionStatus: speechInputValid ? 'processing' : 'failed',
       errorMessage: [errorMessage, ...failures].filter(Boolean).join(' ') || null

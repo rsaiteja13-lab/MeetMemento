@@ -28,16 +28,40 @@ enum CaptureStartupRecoveryPolicy {
     }
 }
 
-enum ZoomMeetingState: Equatable {
+enum MeetingLifecyclePolicy {
+    /// A transient helper/window must survive two polls before it can start a recording.
+    static let startConfirmationChecks = 2
+    /// Window replacements, system wake, full-screen changes, and minimized calls can
+    /// temporarily remove a meeting window from the window list. Twenty one-second
+    /// polls are deliberately conservative: saving a few seconds late is safer than
+    /// losing the rest of a long meeting.
+    static let stopGraceChecks = 20
+    /// Do not allow a stopped session to restart until the old meeting is conclusively gone.
+    static let endedConfirmationChecks = 12
+
+    static func shouldStart(after consecutiveMeetingChecks: Int) -> Bool {
+        consecutiveMeetingChecks >= startConfirmationChecks
+    }
+
+    static func shouldStop(after consecutiveMissingChecks: Int) -> Bool {
+        consecutiveMissingChecks >= stopGraceChecks
+    }
+
+    static func hasConfirmedMeetingEnded(after consecutiveMissingChecks: Int) -> Bool {
+        consecutiveMissingChecks >= endedConfirmationChecks
+    }
+}
+
+enum MeetingState: Equatable {
     case notRunning
     case open
     case inMeeting
 
     var label: String {
         switch self {
-        case .notRunning: return "Zoom is not open"
-        case .open: return "Zoom is open"
-        case .inMeeting: return "Zoom meeting detected"
+        case .notRunning: return "Ready for meetings"
+        case .open: return "Meeting app is open"
+        case .inMeeting: return "Meeting detected"
         }
     }
 }

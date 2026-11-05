@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('meetMemento', {
   meetingFileUrl: (id, kind) => ipcRenderer.invoke('meetings:file-url', { id, kind }),
   renameMeeting: (id, title) => ipcRenderer.invoke('meetings:rename', { id, title }),
   deleteMeeting: (id) => ipcRenderer.invoke('meetings:delete', id),
+  deleteMeetings: (ids) => ipcRenderer.invoke('meetings:delete-many', ids),
   exportMeeting: (id) => ipcRenderer.invoke('meetings:export', id),
   openRecordingFolder: (id) => ipcRenderer.invoke('meetings:open-folder', id),
   openRecordings: () => ipcRenderer.invoke('app:open-recordings'),

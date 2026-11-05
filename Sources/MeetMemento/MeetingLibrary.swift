@@ -1,5 +1,10 @@
 import Foundation
 
+struct TrashMoveResult {
+    let movedIDs: Set<UUID>
+    let failures: [String]
+}
+
 @MainActor
 final class MeetingLibrary: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
@@ -59,7 +64,10 @@ final class MeetingLibrary: ObservableObject {
         let fileName: String?
         switch kind {
         case .audio:
-            fileName = meeting.combinedAudioFile ?? meeting.systemAudioFile ?? meeting.microphoneFile
+            // System output is the clean playback track. Older recordings may
+            // contain a raw system+microphone mix whose speaker bleed sounds like
+            // echo, so only fall back to it when no system track is available.
+            fileName = meeting.systemAudioFile ?? meeting.combinedAudioFile ?? meeting.microphoneFile
         case .video:
             fileName = meeting.videoFile
         case .transcript:
@@ -78,6 +86,28 @@ final class MeetingLibrary: ObservableObject {
         }
         try FileManager.default.trashItem(at: recordingFolder, resultingItemURL: nil)
         reload()
+    }
+
+    func moveToTrash(_ meetings: [MeetingRecord]) -> TrashMoveResult {
+        var movedIDs = Set<UUID>()
+        var failures: [String] = []
+        var seenIDs = Set<UUID>()
+
+        for meeting in meetings where seenIDs.insert(meeting.id).inserted {
+            let recordingFolder = folder(for: meeting)
+            guard FileManager.default.fileExists(atPath: recordingFolder.path) else {
+                movedIDs.insert(meeting.id)
+                continue
+            }
+            do {
+                try FileManager.default.trashItem(at: recordingFolder, resultingItemURL: nil)
+                movedIDs.insert(meeting.id)
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        reload()
+        return TrashMoveResult(movedIDs: movedIDs, failures: failures)
     }
 }
 

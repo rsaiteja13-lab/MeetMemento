@@ -4,9 +4,13 @@ final class MeetingCaptureController {
     private var systemAudio: SystemAudioCapture?
     private var microphone: MicrophoneCapture?
 
-    func start(in folderURL: URL, includeMicrophone: Bool) async throws -> ActiveCapture {
+    func start(
+        in folderURL: URL,
+        includeMicrophone: Bool,
+        target: MeetingCaptureTarget
+    ) async throws -> ActiveCapture {
         try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
-        let videoURL = folderURL.appendingPathComponent("zoom-screen.mp4")
+        let videoURL = folderURL.appendingPathComponent("meeting-screen.mp4")
         let systemAudioURL = folderURL.appendingPathComponent("meeting-audio.m4a")
         let microphoneURL = includeMicrophone ? folderURL.appendingPathComponent("my-microphone.caf") : nil
 
@@ -22,7 +26,11 @@ final class MeetingCaptureController {
             }
         }
 
-        let systemAudio = SystemAudioCapture(audioOutputURL: systemAudioURL, videoOutputURL: videoURL)
+        let systemAudio = SystemAudioCapture(
+            audioOutputURL: systemAudioURL,
+            videoOutputURL: videoURL,
+            captureTarget: target
+        )
         do {
             try await systemAudio.start()
             self.systemAudio = systemAudio

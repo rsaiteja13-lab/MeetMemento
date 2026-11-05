@@ -66,7 +66,7 @@ struct MenuBarView: View {
                     .disabled(!model.canStartRecording || !model.capturePermissionsReady)
             }
 
-            Toggle("Record Zoom automatically", isOn: $settings.autoRecord)
+            Toggle("Record meetings automatically", isOn: $settings.autoRecord)
             Divider()
             HStack {
                 Button("Open MeetMemento") {
@@ -91,7 +91,7 @@ struct MenuBarView: View {
     }
 
     private var statusTitle: String {
-        if model.captureState == .recording { return "Recording Zoom" }
+        if model.captureState == .recording { return "Recording meeting" }
         if !model.permissions.screenRecording {
             return "Automatic recording is paused"
         }
@@ -103,6 +103,6 @@ struct MenuBarView: View {
         if !model.permissions.screenRecording {
             return "Finish setup to start recording."
         }
-        return model.zoomState.label
+        return model.meetingState.label
     }
 }

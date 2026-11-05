@@ -30,212 +30,45 @@ struct ContentView: View {
     }
 
     private var mainView: some View {
+        splitView
+            .confirmationDialog(
+                "Move recording to Trash?",
+                isPresented: Binding(
+                    get: { meetingPendingDeletion != nil },
+                    set: { if !$0 { meetingPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: meetingPendingDeletion
+            ) { meeting in
+                Button("Move to Trash", role: .destructive) {
+                    model.moveToTrash(meeting)
+                    meetingPendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    meetingPendingDeletion = nil
+                }
+            } message: { meeting in
+                Text("“\(meeting.title)” and its audio, video, and transcript will be moved together. You can recover it from macOS Trash.")
+            }
+            .confirmationDialog(
+                "Move \(selectedMeetingIDs.count) recordings to Trash?",
+                isPresented: $showBulkDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Move \(selectedMeetingIDs.count) to Trash", role: .destructive) {
+                    deleteSelectedMeetings()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Each selected recording and its audio, video, and transcript will be moved together. You can recover them from macOS Trash.")
+            }
+    }
+
+    private var splitView: some View {
         NavigationSplitView {
-            VStack(spacing: 0) {
-                SidebarBrand()
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-
-                Button {
-                    if isSelectingMeetings { endMeetingSelection() }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        model.selectedMeetingID = nil
-                    }
-                } label: {
-                    Label("Home", systemImage: model.selectedMeetingID == nil ? "house.fill" : "house")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(
-                            model.selectedMeetingID == nil ? Color.indigo.opacity(0.14) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 9)
-                        )
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-                .accessibilityIdentifier("sidebar-home-button")
-
-                HStack(spacing: 8) {
-                    Text("Recordings")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text("\(filteredMeetings.count)")
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(.quaternary, in: Capsule())
-                    Spacer()
-                    Button(isSelectingMeetings ? "Done" : "Select") {
-                        if isSelectingMeetings {
-                            endMeetingSelection()
-                        } else {
-                            isSelectingMeetings = true
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.indigo)
-                    .disabled(filteredMeetings.isEmpty && !isSelectingMeetings)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 5)
-
-                List(selection: $model.selectedMeetingID) {
-                    ForEach(calendarGroups) { month in
-                        Section {
-                            ForEach(month.days) { day in
-                                Text(day.date, format: .dateTime.weekday(.wide).day())
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 4)
-                                ForEach(day.meetings) { meeting in
-                                    if isSelectingMeetings {
-                                        Button {
-                                            toggleMeetingSelection(meeting)
-                                        } label: {
-                                            MeetingRow(
-                                                meeting: meeting,
-                                                isSelected: selectedMeetingIDs.contains(meeting.id),
-                                                isSelectionMode: true,
-                                                isBulkSelected: selectedMeetingIDs.contains(meeting.id)
-                                            ) {}
-                                        }
-                                        .buttonStyle(.plain)
-                                        .disabled(meeting.transcriptionStatus == .processing)
-                                        .help(
-                                            meeting.transcriptionStatus == .processing
-                                                ? "Wait for this transcript to finish before deleting the recording"
-                                                : "Select this recording"
-                                        )
-                                    } else {
-                                        MeetingRow(
-                                            meeting: meeting,
-                                            isSelected: model.selectedMeetingID == meeting.id,
-                                            isSelectionMode: false,
-                                            isBulkSelected: false
-                                        ) {
-                                            meetingPendingDeletion = meeting
-                                        }
-                                            .tag(meeting.id)
-                                            .contextMenu {
-                                                RecordingContextMenu(meeting: meeting) {
-                                                    meetingPendingDeletion = meeting
-                                                }
-                                            }
-                                    }
-                                }
-                            }
-                        } header: {
-                            Text(month.date, format: .dateTime.month(.wide).year())
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if filteredMeetings.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: searchText.isEmpty ? "waveform.badge.plus" : "magnifyingglass")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                            Text(searchText.isEmpty ? "No recordings yet" : "No matches")
-                                .font(.subheadline.weight(.semibold))
-                            Text(searchText.isEmpty ? "Your meeting recordings will appear here." : "Try a different search.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 24)
-                        .listRowBackground(Color.clear)
-                    }
-                }
-                .listStyle(.sidebar)
-                .searchable(text: $searchText, prompt: "Search meetings")
-                .onDeleteCommand {
-                    if isSelectingMeetings, !selectedMeetingIDs.isEmpty {
-                        showBulkDeleteConfirmation = true
-                    } else {
-                        guard model.captureState == .idle,
-                              let id = model.selectedMeetingID,
-                              let meeting = library.meetings.first(where: { $0.id == id }) else { return }
-                        meetingPendingDeletion = meeting
-                    }
-                }
-
-                if isSelectingMeetings {
-                    HStack(spacing: 10) {
-                        Button(selectAllButtonTitle) {
-                            toggleSelectAllVisibleMeetings()
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(selectableFilteredMeetings.isEmpty)
-                        .help(searchText.isEmpty ? "Select every recording" : "Select every matching recording")
-
-                        Spacer()
-
-                        Text("\(selectedMeetingIDs.count) selected")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button(role: .destructive) {
-                            showBulkDeleteConfirmation = true
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                        .disabled(selectedMeetingIDs.isEmpty || model.captureState != .idle)
-                    }
-                    .controlSize(.small)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-
-                Button {
-                    model.openTrash()
-                } label: {
-                    Label("Recently Deleted", systemImage: "trash")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .help("Open macOS Trash to recover a deleted recording")
-
-                Divider()
-                SidebarRecorderCard()
-                    .padding(12)
-            }
-            .navigationSplitViewColumnWidth(min: 270, ideal: 310, max: 380)
+            sidebar
         } detail: {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
-                if model.captureState == .recording, model.selectedMeetingID == nil {
-                    ActiveRecordingView()
-                        .transition(.opacity)
-                } else if let id = model.selectedMeetingID,
-                   let meeting = library.meetings.first(where: { $0.id == id }) {
-                    MeetingDetailView(meeting: meeting)
-                        .id(meeting.id)
-                        .transition(
-                            .asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .trailing)),
-                                removal: .opacity.combined(with: .move(edge: .leading))
-                            )
-                        )
-                } else {
-                    HomeDashboardView()
-                        .transition(.opacity)
-                }
-            }
-            .clipped()
-            .animation(.easeInOut(duration: 0.22), value: model.selectedMeetingID)
+            detailPane
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -262,37 +95,232 @@ struct ContentView: View {
             }
         }
         .tint(.indigo)
-        .confirmationDialog(
-            "Move recording to Trash?",
-            isPresented: Binding(
-                get: { meetingPendingDeletion != nil },
-                set: { if !$0 { meetingPendingDeletion = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: meetingPendingDeletion
-        ) { meeting in
-            Button("Move to Trash", role: .destructive) {
-                model.moveToTrash(meeting)
-                meetingPendingDeletion = nil
-            }
-            Button("Cancel", role: .cancel) {
-                meetingPendingDeletion = nil
-            }
-        } message: { meeting in
-            Text("“\(meeting.title)” and its audio, video, and transcript will be moved together. You can recover it from macOS Trash.")
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            SidebarBrand()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            homeButton
+            recordingsHeader
+            recordingList
+            if isSelectingMeetings { bulkActions }
+            recentlyDeletedButton
+            Divider()
+            SidebarRecorderCard()
+                .padding(12)
         }
-        .confirmationDialog(
-            "Move \(selectedMeetingIDs.count) recordings to Trash?",
-            isPresented: $showBulkDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Move \(selectedMeetingIDs.count) to Trash", role: .destructive) {
-                deleteSelectedMeetings()
+        .navigationSplitViewColumnWidth(min: 270, ideal: 310, max: 380)
+    }
+
+    private var homeButton: some View {
+        Button {
+            if isSelectingMeetings { endMeetingSelection() }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                model.selectedMeetingID = nil
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Each selected recording and its audio, video, and transcript will be moved together. You can recover them from macOS Trash.")
+        } label: {
+            Label("Home", systemImage: model.selectedMeetingID == nil ? "house.fill" : "house")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    model.selectedMeetingID == nil ? Color.indigo.opacity(0.14) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 9)
+                )
         }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+        .accessibilityIdentifier("sidebar-home-button")
+    }
+
+    private var recordingsHeader: some View {
+        HStack(spacing: 8) {
+            Text("Recordings")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text("\(filteredMeetings.count)")
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.quaternary, in: Capsule())
+            Spacer()
+            Button(isSelectingMeetings ? "Done" : "Select") {
+                if isSelectingMeetings { endMeetingSelection() }
+                else { isSelectingMeetings = true }
+            }
+            .buttonStyle(.plain)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.indigo)
+            .disabled(filteredMeetings.isEmpty && !isSelectingMeetings)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 5)
+    }
+
+    private var recordingList: some View {
+        List(selection: $model.selectedMeetingID) {
+            ForEach(calendarGroups) { month in
+                recordingMonthSection(month)
+            }
+            if filteredMeetings.isEmpty { emptyRecordingsView }
+        }
+        .listStyle(.sidebar)
+        .searchable(text: $searchText, prompt: "Search meetings")
+        .onDeleteCommand(perform: handleDeleteCommand)
+    }
+
+    private func recordingMonthSection(_ month: RecordingMonthGroup) -> some View {
+        Section {
+            ForEach(month.days) { day in
+                Text(day.date, format: .dateTime.weekday(.wide).day())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                ForEach(day.meetings) { meeting in
+                    recordingRow(meeting)
+                }
+            }
+        } header: {
+            Text(month.date, format: .dateTime.month(.wide).year())
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func recordingRow(_ meeting: MeetingRecord) -> some View {
+        if isSelectingMeetings {
+            Button {
+                toggleMeetingSelection(meeting)
+            } label: {
+                MeetingRow(
+                    meeting: meeting,
+                    isSelected: selectedMeetingIDs.contains(meeting.id),
+                    isSelectionMode: true,
+                    isBulkSelected: selectedMeetingIDs.contains(meeting.id)
+                ) {}
+            }
+            .buttonStyle(.plain)
+            .disabled(meeting.transcriptionStatus == .processing)
+            .help(
+                meeting.transcriptionStatus == .processing
+                    ? "Wait for this transcript to finish before deleting the recording"
+                    : "Select this recording"
+            )
+        } else {
+            MeetingRow(
+                meeting: meeting,
+                isSelected: model.selectedMeetingID == meeting.id,
+                isSelectionMode: false,
+                isBulkSelected: false
+            ) {
+                meetingPendingDeletion = meeting
+            }
+            .tag(meeting.id)
+            .contextMenu {
+                RecordingContextMenu(meeting: meeting) {
+                    meetingPendingDeletion = meeting
+                }
+            }
+        }
+    }
+
+    private var emptyRecordingsView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: searchText.isEmpty ? "waveform.badge.plus" : "magnifyingglass")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text(searchText.isEmpty ? "No recordings yet" : "No matches")
+                .font(.subheadline.weight(.semibold))
+            Text(searchText.isEmpty ? "Your meeting recordings will appear here." : "Try a different search.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .listRowBackground(Color.clear)
+    }
+
+    private var bulkActions: some View {
+        HStack(spacing: 10) {
+            Button(selectAllButtonTitle, action: toggleSelectAllVisibleMeetings)
+                .buttonStyle(.borderless)
+                .disabled(selectableFilteredMeetings.isEmpty)
+                .help(searchText.isEmpty ? "Select every recording" : "Select every matching recording")
+            Spacer()
+            Text("\(selectedMeetingIDs.count) selected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button(role: .destructive) {
+                showBulkDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(selectedMeetingIDs.isEmpty || model.captureState != .idle)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var recentlyDeletedButton: some View {
+        Button {
+            model.openTrash()
+        } label: {
+            Label("Recently Deleted", systemImage: "trash")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .help("Open macOS Trash to recover a deleted recording")
+    }
+
+    private var detailPane: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
+            if model.captureState == .recording, model.selectedMeetingID == nil {
+                ActiveRecordingView()
+                    .transition(.opacity)
+            } else if let id = model.selectedMeetingID,
+                      let meeting = library.meetings.first(where: { $0.id == id }) {
+                MeetingDetailView(meeting: meeting)
+                    .id(meeting.id)
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .trailing)),
+                            removal: .opacity.combined(with: .move(edge: .leading))
+                        )
+                    )
+            } else {
+                HomeDashboardView()
+                    .transition(.opacity)
+            }
+        }
+        .clipped()
+        .animation(.easeInOut(duration: 0.22), value: model.selectedMeetingID)
+    }
+
+    private func handleDeleteCommand() {
+        if isSelectingMeetings, !selectedMeetingIDs.isEmpty {
+            showBulkDeleteConfirmation = true
+            return
+        }
+        guard model.captureState == .idle,
+              let id = model.selectedMeetingID,
+              let meeting = library.meetings.first(where: { $0.id == id }) else { return }
+        meetingPendingDeletion = meeting
     }
 
     private var calendarGroups: [RecordingMonthGroup] {

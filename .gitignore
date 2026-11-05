@@ -1,5 +1,6 @@
 .build/
 Dist/
+/MeetMemento-Windows/
 .DS_Store
 .swiftpm/
 .pnpm-store/
@@ -22,9 +23,3 @@ Recordings/
 *.wav
 transcript.txt
 app-diagnostics*.log
-
-# Windows/Electron build outputs.
-Windows/node_modules/
-Windows/dist/
-Windows/.cache/
-Windows/npm-debug.log*

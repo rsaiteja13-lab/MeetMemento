@@ -1,19 +1,13 @@
-# MeetMemento
+# MeetMemento for macOS
 
-MeetMemento is a background app for macOS and Windows that detects calls in Zoom, Google Meet, Microsoft Teams, Webex, Slack Huddles, and other meeting apps. It preserves the meeting window, system audio, your microphone, and a timestamped transcript locally.
+MeetMemento for macOS detects calls in Zoom, Google Meet, Microsoft Teams, Webex, Slack Huddles, and other meeting apps. It preserves the meeting window, system audio, your microphone, and a timestamped transcript locally.
+
+Looking for the Windows app? Use the separate [MeetMemento for Windows](https://github.com/rsaiteja13-lab/MeetMemento-Windows) repository.
 
 > [!IMPORTANT]
 > MeetMemento is designed for consensual recording. Tell meeting participants that you are recording and follow the laws and workplace policies that apply to you.
 
-## Install on Windows
-
-1. Download the `x64.exe` installer for most Windows PCs or the `arm64.exe` installer for Windows on ARM.
-2. Open MeetMemento and complete its one-time setup. It checks automatic recording, microphone access, local transcript support, and launch at sign-in in one flow.
-3. Join a supported meeting normally. Closing the MeetMemento window leaves it ready in the Windows system tray.
-
-Windows capture uses system-output loopback, so it continues to receive meeting audio when the user changes between speakers, USB devices, and Bluetooth headphones. It saves echo-reduced microphone audio separately and uses it for the transcript without layering it over the clean meeting playback. The Windows app stores files under `Videos\MeetMemento\Recordings`. See [Windows installation and verification](Windows/README.md) for package details and the complete test checklist.
-
-## Install on macOS
+## Install
 
 ### Download a release
 
@@ -28,15 +22,15 @@ The current downloadable build uses the project's stable local code-signing iden
 Apple's Command Line Tools are enough; the full Xcode app is not required.
 
 ```sh
-git clone https://github.com/rsaiteja13-lab/MeetMemento.git
-cd MeetMemento
+git clone https://github.com/rsaiteja13-lab/MeetMemento-macOS.git
+cd MeetMemento-macOS
 ALLOW_ADHOC_SIGNING=1 ./Scripts/build-app.sh
 open Dist/MeetMemento.app
 ```
 
 The build script creates a universal app for both Apple silicon and Intel Macs. `ALLOW_ADHOC_SIGNING=1` is only for disposable development builds; rebuilding that way changes the app's macOS privacy identity. Release builds must use a persistent signing certificate. For normal use, move `MeetMemento.app` into `/Applications` before completing the permission setup.
 
-## What the macOS app does
+## What the app does
 
 - Detects active calls from real meeting windows in Zoom, Google Meet, Microsoft Teams, Webex, Slack Huddles, Discord, Skype, WhatsApp, FaceTime, RingCentral, GoTo, Jitsi, Whereby, and unfamiliar apps whose window has a clear live-call title.
 - Records the detected meeting window with an isolated H.264 writer, a monotonic meeting timeline, periodic still-frame keepalives, and automatic ScreenCaptureKit recovery so static or long meetings keep their full duration.

@@ -72,6 +72,10 @@ MeetMemento never hides its recording state: the menu-bar icon and main window t
 
 Audio and transcripts stay on the Mac. Speech recognition is requested from macOS. When the current language supports on-device recognition, MeetMemento requires that mode; otherwise macOS may use Apple's speech service, as disclosed in Settings.
 
+## Cross-platform maintenance
+
+MeetMemento's macOS and Windows editions are maintained as a pair. Every fix to shared meeting detection, recording, audio, video, transcription, recovery, export, background operation, permissions, or library behavior must be checked against both repositories. When the same problem applies to both platforms, both implementations, test suites, and releases should be updated together; platform-specific exceptions should be documented in the release notes.
+
 ## Current scope
 
 This is an MVP. It checks visible meeting windows every second and uses provider-specific call signals to avoid recording home screens or ordinary browser pages. A Zoom helper process qualifies only while it owns a visible, nontransparent meeting window; launching a helper alone never starts a recording. Automatic capture also requires the same meeting window on consecutive checks, tolerates brief window replacements before stopping, and waits for a confirmed meeting end before another automatic start. An unfamiliar app can be detected automatically when its window clearly says it is a live call, and **Record meeting now** captures the most recent app window when no reliable automatic signal exists. No desktop operating system exposes a universal “user joined a meeting” event for every arbitrary app, so that manual fallback remains necessary for apps with ambiguous window titles. Summaries, action items, speaker diarization, cloud sync, and automatic deletion policies are outside the current scope.
